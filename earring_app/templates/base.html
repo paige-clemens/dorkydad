@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Earring Maker{% endblock %} – Multicolor 3MF Generator</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  {% block head %}{% endblock %}
+</head>
+<body>
+  <a href="#main-content" class="skip-link">Skip to main content</a>
+
+  <header role="banner">
+    <nav aria-label="Main navigation">
+      <a href="{{ url_for('index') }}" class="logo" aria-label="Earring Maker home">
+        <span aria-hidden="true">&#9670;</span> Earring Maker
+      </a>
+    </nav>
+  </header>
+
+  <main id="main-content" role="main">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <div class="flash-container" role="alert" aria-live="polite">
+          {% for category, message in messages %}
+            <div class="flash flash-{{ category }}">{{ message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <footer role="contentinfo">
+    <p>&copy; 2025 Earring Maker. Built for accessible 3D printing.</p>
+  </footer>
+
+  {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block title %}Color Preview{% endblock %}
+
+{% block content %}
+<section class="card" aria-labelledby="preview-heading">
+  <h1 id="preview-heading">Color-Reduced Preview</h1>
+  <p>Your image has been reduced to <strong>{{ n_colors }}</strong> colors.
+     Review the result below. If you're not satisfied, adjust the number of
+     colors and try again.</p>
+
+  <div class="preview-container">
+    <figure>
+      <img src="data:image/png;base64,{{ preview_b64 }}"
+           alt="Preview of your image reduced to {{ n_colors }} colors"
+           class="preview-image">
+      <figcaption>Color-reduced preview ({{ n_colors }} colors)</figcaption>
+    </figure>
+  </div>
+
+  <div class="palette-display" role="region" aria-label="Color palette used">
+    <h2>Palette</h2>
+    <ul class="palette-list">
+      {% for color in palette %}
+      <li>
+        <span class="swatch"
+              style="background-color: rgb({{ color[0] }}, {{ color[1] }}, {{ color[2] }})"
+              role="img"
+              aria-label="Color {{ loop.index }}: RGB {{ color[0] }}, {{ color[1] }}, {{ color[2] }}">
+        </span>
+        <span class="swatch-label">
+          Slot {{ loop.index }}:
+          <code>rgb({{ color[0] }}, {{ color[1] }}, {{ color[2] }})</code>
+        </span>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+
+  <div class="action-row">
+    {# --- Reject: change color count --- #}
+    <details class="adjust-panel">
+      <summary class="btn btn-secondary">Change Color Count</summary>
+      <form action="{{ url_for('preview') }}" method="get" class="inline-form"
+            aria-label="Adjust number of colors">
+        <div class="form-group">
+          <label for="adjust-colors">New number of colors</label>
+          <input type="number" id="adjust-colors" name="n_colors"
+                 value="{{ n_colors }}" min="2" max="16" step="1">
+        </div>
+        <button type="submit" class="btn btn-secondary">Re-process</button>
+      </form>
+    </details>
+
+    {# --- Approve: configure 3MF parameters --- #}
+    <details class="adjust-panel" open>
+      <summary class="btn btn-primary">Approve &amp; Configure 3MF</summary>
+      <form action="{{ url_for('generate') }}" method="post"
+            aria-label="3MF generation settings">
+        <fieldset>
+          <legend>Earring dimensions</legend>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="target-size">Size (mm, longest side)</label>
+              <input type="number" id="target-size" name="target_size_mm"
+                     value="39" min="5" max="200" step="0.5">
+            </div>
+            <div class="form-group">
+              <label for="thickness">Thickness (mm)</label>
+              <input type="number" id="thickness" name="thickness_mm"
+                     value="1.0" min="0.4" max="5" step="0.1">
+            </div>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="nub-width">Nub width (mm)</label>
+              <input type="number" id="nub-width" name="nub_width_mm"
+                     value="4.0" min="2" max="20" step="0.5">
+            </div>
+            <div class="form-group">
+              <label for="nub-height">Nub height (mm)</label>
+              <input type="number" id="nub-height" name="nub_height_mm"
+                     value="5.0" min="2" max="20" step="0.5">
+            </div>
+            <div class="form-group">
+              <label for="hole-diam">Hole diameter (mm)</label>
+              <input type="number" id="hole-diam" name="hole_diameter_mm"
+                     value="1.6" min="0.5" max="5" step="0.1">
+            </div>
+          </div>
+        </fieldset>
+
+        <fieldset>
+          <legend>Output options</legend>
+          <div class="form-group checkbox-group">
+            <input type="checkbox" id="make-pair" name="make_pair" checked>
+            <label for="make-pair">Generate mirrored pair (left + right ear)</label>
+          </div>
+        </fieldset>
+
+        <button type="submit" class="btn btn-primary">Generate 3MF</button>
+      </form>
+    </details>
+  </div>
+</section>
+{% endblock %}

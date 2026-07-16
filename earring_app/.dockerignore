@@ -1,0 +1,7 @@
+__pycache__
+*.pyc
+.git
+.venv
+uploads/
+*.3mf
+.env

@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block title %}Download{% endblock %}
+
+{% block content %}
+<section class="card" aria-labelledby="download-heading">
+  <h1 id="download-heading">Your Earring is Ready!</h1>
+  <p>Your multicolor 3MF file has been generated. Download it and open it in
+     BambuStudio, OrcaSlicer, or any compatible slicer. Assign each part to an
+     AMS filament slot and print!</p>
+
+  <div class="action-row">
+    <a href="{{ url_for('download_file') }}" class="btn btn-primary" download>
+      Download 3MF File
+    </a>
+    <a href="{{ url_for('index') }}" class="btn btn-secondary">
+      Start Over
+    </a>
+  </div>
+
+  <details>
+    <summary>Printing tips</summary>
+    <ul>
+      <li>Import the .3mf into your slicer — all parts will be pre-assembled.</li>
+      <li>Assign each part to the matching AMS filament slot (the slot numbers match the palette order).</li>
+      <li>The earring has a nub at the top with a hole for a jump ring or ear wire.</li>
+      <li>Print flat on the bed with no supports needed.</li>
+    </ul>
+  </details>
+</section>
+{% endblock %}

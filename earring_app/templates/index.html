@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Upload Image{% endblock %}
+
+{% block content %}
+<section class="card" aria-labelledby="upload-heading">
+  <h1 id="upload-heading">Create Multicolor Earrings</h1>
+  <p>Upload a PNG, JPEG, or SVG image and we'll convert it into a multicolor 3MF file
+     ready for 3D printing, complete with an earring hanging nub.</p>
+
+  <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data"
+        aria-describedby="upload-help">
+
+    <div class="form-group">
+      <label for="image-upload">Image file <span class="required" aria-hidden="true">*</span></label>
+      <span id="upload-help" class="help-text">Accepted formats: PNG, JPEG, SVG. Maximum 16 MB.</span>
+      <input type="file"
+             id="image-upload"
+             name="image"
+             accept=".png,.jpg,.jpeg,.svg,image/png,image/jpeg,image/svg+xml"
+             required
+             aria-required="true"
+             aria-describedby="upload-help">
+    </div>
+
+    <div class="form-group">
+      <label for="n-colors">Number of colors</label>
+      <span id="colors-help" class="help-text">
+        How many colors to reduce the image to (2–16). Each color maps to an AMS filament slot.
+      </span>
+      <input type="number"
+             id="n-colors"
+             name="n_colors"
+             value="6"
+             min="2"
+             max="16"
+             step="1"
+             aria-describedby="colors-help">
+    </div>
+
+    <button type="submit" class="btn btn-primary">Upload &amp; Preview</button>
+  </form>
+</section>
+{% endblock %}
