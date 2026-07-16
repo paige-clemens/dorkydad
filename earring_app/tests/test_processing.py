@@ -196,25 +196,32 @@ class TestGenerateShapePreview:
 
     def test_nub_uses_base_color(self):
         # Create image with a known dominant color and transparent background
+        # Place foreground near the top so the nub extends above the canvas
         img = Image.new("RGBA", (80, 80), (0, 0, 0, 0))
         px = img.load()
         for x in range(20, 60):
-            for y in range(20, 60):
+            for y in range(5, 60):
                 px[x, y] = (200, 50, 50, 255)
         buf = io.BytesIO()
         img.save(buf, format="PNG")
         palette = [(200, 50, 50), (50, 50, 200)]
         result = generate_shape_preview(buf.getvalue(), palette=palette)
         arr = np.array(Image.open(io.BytesIO(result)))
-        # The nub extends above the image; check that nub pixels are
-        # the base color (200, 50, 50) and not black or checker
-        # Find a nub pixel: center column, top of image (row 0 or 1)
+        # The nub extends above the original image, so canvas was padded.
+        # Scan the center column from top to find a non-checker pixel;
+        # it should be the base color (200, 50, 50), not black.
         cx = arr.shape[1] // 2
-        nub_pixel = tuple(arr[0, cx, :3])
-        # Should not be checker (220,220,220) or (255,255,255) or black
+        checker_colors = {(220, 220, 220), (255, 255, 255)}
+        nub_pixel = None
+        for row in range(arr.shape[0]):
+            px_color = tuple(int(c) for c in arr[row, cx, :3])
+            if px_color not in checker_colors:
+                nub_pixel = px_color
+                break
+        assert nub_pixel is not None, "Should find a nub pixel"
         assert nub_pixel != (0, 0, 0), "Nub should not be black"
-        assert nub_pixel not in [(220, 220, 220), (255, 255, 255)], \
-            "Nub should not be checker pattern"
+        assert nub_pixel == (200, 50, 50), \
+            f"Nub should be base color (200,50,50), got {nub_pixel}"
 
 
 class TestMakeChecker:

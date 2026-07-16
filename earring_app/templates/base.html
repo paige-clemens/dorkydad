@@ -11,10 +11,19 @@
   <a href="#main-content" class="skip-link">Skip to main content</a>
 
   <header role="banner">
-    <nav aria-label="Main navigation">
+    <nav aria-label="Main navigation" class="header-nav">
       <a href="{{ url_for('index') }}" class="logo" aria-label="Earring Maker home">
         <span aria-hidden="true">&#9670;</span> Earring Maker
       </a>
+      <div class="theme-switcher" role="group" aria-label="Theme switcher">
+        <span id="theme-label">Theme:</span>
+        <button type="button" class="theme-btn" data-theme-value="light"
+                aria-pressed="false" aria-describedby="theme-label">Light</button>
+        <button type="button" class="theme-btn" data-theme-value="dark"
+                aria-pressed="false" aria-describedby="theme-label">Dark</button>
+        <button type="button" class="theme-btn" data-theme-value="high-contrast"
+                aria-pressed="false" aria-describedby="theme-label">High Contrast</button>
+      </div>
     </nav>
   </header>
 
@@ -36,6 +45,32 @@
     <p>&copy; 2025 Earring Maker. Built for accessible 3D printing.</p>
   </footer>
 
+  <script>
+    (function() {
+      var root = document.documentElement;
+      var saved = localStorage.getItem('theme');
+      function apply(theme) {
+        if (theme && theme !== 'auto') {
+          root.setAttribute('data-theme', theme);
+        } else {
+          root.removeAttribute('data-theme');
+        }
+        document.querySelectorAll('.theme-btn').forEach(function(btn) {
+          var val = btn.getAttribute('data-theme-value');
+          btn.setAttribute('aria-pressed', val === (theme || 'light') ? 'true' : 'false');
+        });
+      }
+      if (saved) apply(saved);
+      else apply('light');
+      document.addEventListener('click', function(e) {
+        var btn = e.target.closest('.theme-btn');
+        if (!btn) return;
+        var theme = btn.getAttribute('data-theme-value');
+        localStorage.setItem('theme', theme);
+        apply(theme);
+      });
+    })();
+  </script>
   {% block scripts %}{% endblock %}
 </body>
 </html>
