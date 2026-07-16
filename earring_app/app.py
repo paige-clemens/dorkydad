@@ -19,7 +19,15 @@ from flask import (
     url_for,
 )
 
-from processing import generate_3mf, is_svg, quantized_to_png_bytes, rasterize_svg, reduce_colors
+from processing import (
+    generate_3mf,
+    generate_shape_preview,
+    is_svg,
+    quantized_to_png_bytes,
+    rasterize_svg,
+    reduce_colors,
+    remove_background,
+)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", secrets.token_hex(32))
@@ -75,6 +83,15 @@ def upload():
         except Exception as exc:
             flash(f"SVG rasterization failed: {exc}", "error")
             return redirect(url_for("index"))
+
+    # Optionally remove background
+    if request.form.get("remove_bg") == "on":
+        try:
+            raw = remove_background(raw)
+        except Exception as exc:
+            flash(f"Background removal failed: {exc}", "error")
+            return redirect(url_for("index"))
+
     path = _session_path("original")
     with open(path, "wb") as f:
         f.write(raw)
@@ -87,7 +104,7 @@ def upload():
         if n_colors > 16:
             n_colors = 16
     except ValueError:
-        n_colors = 6
+        n_colors = 4
 
     return redirect(url_for("preview", n_colors=n_colors))
 
@@ -120,9 +137,17 @@ def preview():
     preview_png = quantized_to_png_bytes(quantized)
     preview_b64 = base64.b64encode(preview_png).decode("ascii")
 
+    # Shape preview: silhouette + nub on checkered background
+    try:
+        shape_png = generate_shape_preview(raw)
+        shape_b64 = base64.b64encode(shape_png).decode("ascii")
+    except Exception:
+        shape_b64 = None
+
     return render_template(
         "preview.html",
         preview_b64=preview_b64,
+        shape_b64=shape_b64,
         palette=palette,
         n_colors=n_colors,
     )
@@ -145,7 +170,6 @@ def generate():
     # Gather parameters from form
     target_size_mm = request.form.get("target_size_mm", 39.0, type=float)
     thickness_mm = request.form.get("thickness_mm", 1.0, type=float)
-    make_pair = request.form.get("make_pair", "on") == "on"
     nub_width_mm = request.form.get("nub_width_mm", 4.0, type=float)
     nub_height_mm = request.form.get("nub_height_mm", 5.0, type=float)
     hole_diameter_mm = request.form.get("hole_diameter_mm", 1.6, type=float)
@@ -156,7 +180,6 @@ def generate():
             palette,
             target_size_mm=target_size_mm,
             thickness_mm=thickness_mm,
-            make_pair=make_pair,
             nub_width_mm=nub_width_mm,
             nub_height_mm=nub_height_mm,
             hole_diameter_mm=hole_diameter_mm,

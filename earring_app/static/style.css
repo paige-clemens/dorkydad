@@ -292,6 +292,13 @@ legend {
   text-align: center;
 }
 
+.preview-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 1.5rem;
+}
+
 .preview-image {
   max-width: 100%;
   max-height: 28rem;
@@ -302,6 +309,9 @@ legend {
 
 figure {
   display: inline-block;
+  flex: 1 1 auto;
+  max-width: 48%;
+  min-width: 14rem;
 }
 
 figcaption {

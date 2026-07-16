@@ -45,6 +45,66 @@ def is_svg(data: bytes) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# Background removal
+# ---------------------------------------------------------------------------
+
+def remove_background(image_bytes: bytes, tolerance: int = 20) -> bytes:
+    """
+    Remove the background from a raster image.
+
+    Uses flood-fill from the image corners to detect the background color,
+    then sets those pixels to transparent. Returns PNG bytes with alpha channel.
+
+    Parameters
+    ----------
+    image_bytes : raw PNG/JPEG data
+    tolerance   : max per-channel distance from corner color to count as bg
+
+    Returns
+    -------
+    bytes – PNG with transparent background
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    rgba = np.array(img)
+    rgb = rgba[:, :, :3]
+    H, W = rgba.shape[:2]
+
+    # Sample corner pixels to determine background color
+    corners = [rgb[0, 0], rgb[0, W - 1], rgb[H - 1, 0], rgb[H - 1, W - 1]]
+    bg_color = np.median(corners, axis=0).astype(np.int32)
+
+    # Build background mask: pixels close to bg_color
+    diff = np.abs(rgb.astype(np.int32) - bg_color).max(axis=2)
+    bg_mask = diff <= tolerance
+
+    # Flood-fill from edges only — keep interior "bg-colored" pixels as foreground
+    seed_mask = np.zeros((H, W), dtype=np.uint8)
+    seed_mask[bg_mask] = 255
+    # Only keep bg regions connected to the border
+    border_seed = np.zeros((H + 2, W + 2), dtype=np.uint8)
+    flood_result = seed_mask.copy()
+    # Flood fill from each border pixel that is background
+    for y in range(H):
+        for x in [0, W - 1]:
+            if seed_mask[y, x] == 255:
+                cv2.floodFill(flood_result, border_seed, (x, y), 128,
+                              loDiff=(0,), upDiff=(0,))
+    for x in range(W):
+        for y in [0, H - 1]:
+            if seed_mask[y, x] == 255:
+                cv2.floodFill(flood_result, border_seed, (x, y), 128,
+                              loDiff=(0,), upDiff=(0,))
+
+    # Background = pixels that were flood-filled (value 128)
+    final_bg = flood_result == 128
+    rgba[final_bg, 3] = 0
+
+    buf = io.BytesIO()
+    Image.fromarray(rgba).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+# ---------------------------------------------------------------------------
 # Color reduction / quantization
 # ---------------------------------------------------------------------------
 
@@ -75,6 +135,124 @@ def quantized_to_png_bytes(quantized: np.ndarray) -> bytes:
     buf = io.BytesIO()
     Image.fromarray(quantized).save(buf, format="PNG")
     return buf.getvalue()
+
+
+def generate_shape_preview(
+    image_bytes: bytes,
+    nub_width_mm: float = 4.0,
+    nub_height_mm: float = 5.0,
+    hole_diameter_mm: float = 1.6,
+    target_size_mm: float = 39.0,
+    checker_size: int = 10,
+) -> bytes:
+    """
+    Render a preview showing the earring silhouette with nub on a checkered
+    transparency pattern. Returns PNG bytes.
+
+    Parameters
+    ----------
+    image_bytes    : uploaded image (after optional bg removal)
+    nub_width_mm   : nub width
+    nub_height_mm  : nub height
+    hole_diameter_mm : hole diameter
+    target_size_mm : earring target size (for scaling nub proportionally)
+    checker_size   : pixel size of the checker squares
+    """
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    W, H = img.size
+    rgba = np.array(img)
+
+    # Build silhouette
+    has_alpha = True  # we always convert to RGBA
+    silhouette = _build_silhouette(rgba, has_alpha)
+
+    # Compute nub geometry in pixel space
+    # Scale: longest side of silhouette maps to target_size_mm
+    combined_mask = silhouette
+    sil_geom = _mask_to_polygons(silhouette)
+    if sil_geom is not None:
+        minx, miny, maxx, maxy = sil_geom.bounds
+        px_extent = max(maxx - minx, maxy - miny)
+        if px_extent > 0:
+            px_per_mm = px_extent / target_size_mm
+            nub_w_px = nub_width_mm * px_per_mm
+            nub_h_px = nub_height_mm * px_per_mm
+            hole_r_px = (hole_diameter_mm / 2) * px_per_mm
+
+            # Find topmost silhouette pixel (note: in image coords, top = min y)
+            ys, xs = np.where(silhouette)
+            if len(ys) > 0:
+                top_row = int(ys.min())
+                top_cols = xs[ys == top_row]
+                attach_x = int(np.median(top_cols))
+                attach_y = top_row
+
+                nub_left = int(attach_x - nub_w_px / 2)
+                nub_right = int(attach_x + nub_w_px / 2)
+                nub_top = int(attach_y - nub_h_px)
+
+                x_start = max(0, nub_left)
+                x_end = min(W, nub_right)
+
+                # Extend canvas if nub goes above image
+                pad_top = max(0, -nub_top)
+                if pad_top > 0:
+                    pad = np.zeros((pad_top, W, 4), dtype=np.uint8)
+                    rgba = np.vstack([pad, rgba])
+                    silhouette = np.vstack([
+                        np.zeros((pad_top, W), dtype=bool), silhouette
+                    ])
+                    H += pad_top
+                    attach_y += pad_top
+                    nub_top += pad_top
+
+                y_start = max(0, nub_top)
+
+                # Draw nub body (filled rectangle + rounded top)
+                nub_mask = np.zeros((H, W), dtype=np.uint8)
+                cv2.rectangle(nub_mask, (x_start, y_start),
+                              (x_end, attach_y), 255, -1)
+                # Semicircle at top
+                semicircle_cy = y_start + int(nub_w_px / 2)
+                if semicircle_cy > y_start:
+                    cv2.rectangle(nub_mask, (x_start, y_start),
+                                  (x_end, semicircle_cy), 0, -1)
+                    cv2.ellipse(nub_mask,
+                                (attach_x, semicircle_cy),
+                                (int(nub_w_px / 2), int(nub_w_px / 2)),
+                                0, 180, 360, 255, -1)
+                    cv2.rectangle(nub_mask, (x_start, semicircle_cy),
+                                  (x_end, attach_y), 255, -1)
+
+                # Draw hole (clear circle)
+                hole_cy = semicircle_cy if semicircle_cy > y_start else y_start + int(nub_w_px / 2)
+                cv2.circle(nub_mask, (attach_x, hole_cy),
+                           int(hole_r_px), 0, -1)
+
+                # Combine silhouette + nub
+                combined_mask = silhouette | (nub_mask > 0)
+
+    # Build checkered background
+    checker = _make_checker(H, W, checker_size)
+
+    # Composite: show quantized image where mask is True, checker where False
+    rgb = rgba[:, :, :3]
+    output = np.where(combined_mask[:, :, None], rgb, checker)
+
+    buf = io.BytesIO()
+    Image.fromarray(output.astype(np.uint8)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _make_checker(H: int, W: int, size: int = 10) -> np.ndarray:
+    """Generate a checkered pattern (light gray / white) as (H, W, 3) uint8."""
+    ys = np.arange(H) // size
+    xs = np.arange(W) // size
+    grid = (ys[:, None] + xs[None, :]) % 2  # 0 or 1
+    checker = np.where(grid[:, :, None] == 0,
+                       np.array([220, 220, 220], dtype=np.uint8),
+                       np.array([255, 255, 255], dtype=np.uint8))
+    return checker
 
 
 # ---------------------------------------------------------------------------
@@ -209,22 +387,21 @@ def _extrude(g, height: float, z0: float = 0.0):
 # ---------------------------------------------------------------------------
 
 def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
-             hole_diameter_mm: float = 1.6):
+             hole_diameter_mm: float = 1.6, fillet_mm: float = 1.0):
     """
-    Add a rectangular nub with rounded top at the topmost point of the
-    silhouette. Punch a hole through it for earring attachment.
+    Add a nub at the topmost point of the silhouette, smoothly blended into
+    the silhouette contour with a fillet so the junction is seamless even on
+    irregular shapes. Punch a hole through it for earring attachment.
 
     Returns (modified_sil_geom, hole_geometry).
     """
-    minx, miny, maxx, maxy = sil_geom.bounds
-
     # Find the topmost point of the silhouette boundary
     coords = _outline_coords(sil_geom)
     top_i = int(np.argmax(coords[:, 1]))
     attach_x = float(coords[top_i, 0])
     attach_y = float(coords[top_i, 1])
 
-    # Build a nub shape: a rectangle topped with a semicircle
+    # Build the nub stem: a rectangle topped with a semicircle
     hw = nub_width_mm / 2
     nub_bottom = attach_y
     nub_top = attach_y + nub_height_mm
@@ -238,7 +415,6 @@ def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
     ])
     # Semicircle on top
     semicircle = Point(attach_x, nub_top - hw).buffer(hw, quad_segs=24)
-    # Clip to upper half
     clip_box = Polygon([
         (attach_x - hw - 1, nub_top - hw),
         (attach_x + hw + 1, nub_top - hw),
@@ -250,10 +426,19 @@ def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
     if not nub.is_valid:
         nub = make_valid(nub).buffer(0)
 
-    # Union nub with silhouette
+    # Union nub with silhouette, then apply a buffer-unbuffer (fillet) to
+    # smooth the junction between nub and silhouette contour.
     combined = sil_geom.union(nub)
     if not combined.is_valid:
         combined = make_valid(combined).buffer(0)
+
+    # Fillet: dilate then erode by the same radius rounds sharp concave
+    # corners at the junction between the nub stem and the silhouette.
+    if fillet_mm > 0:
+        combined = combined.buffer(fillet_mm, join_style="round", quad_segs=16)
+        combined = combined.buffer(-fillet_mm, join_style="round", quad_segs=16)
+        if not combined.is_valid:
+            combined = make_valid(combined).buffer(0)
 
     # Hole center: in the rounded part of the nub
     hole_cx = attach_x
@@ -319,12 +504,11 @@ def generate_3mf(
     target_size_mm: float = 39.0,
     thickness_mm: float = 1.0,
     base_mm: float = 0.8,
-    make_pair: bool = True,
-    pair_gap_mm: float = 6.0,
     upscale: int = 4,
     nub_width_mm: float = 4.0,
     nub_height_mm: float = 5.0,
     hole_diameter_mm: float = 1.6,
+    pair_gap_mm: float = 6.0,
     dark_override_max: int = 70,
     black_dilate_px: int = 1,
     object_name: str = "earring",
@@ -339,12 +523,11 @@ def generate_3mf(
     target_size_mm: longest XY dimension of the earring
     thickness_mm  : total Z thickness
     base_mm       : back-layer thickness
-    make_pair     : output a mirrored pair
-    pair_gap_mm   : gap between the pair
     upscale       : upscale factor for source image
     nub_width_mm  : width of the hanging nub
     nub_height_mm : height of the hanging nub
     hole_diameter_mm : diameter of the earring hole
+    pair_gap_mm   : gap between the two earring copies
     dark_override_max : pixels darker than this → black slot
     black_dilate_px   : dilate black outlines by this many px
     object_name   : name embedded in the 3MF
@@ -503,23 +686,22 @@ def generate_3mf(
         f'p:UUID="{uuid.uuid4()}"><components>{components}</components></object>'
     )
 
+    # Place two copies side by side
     earring_width_mm = float(xmax - xmin)
     pair_offset = earring_width_mm + pair_gap_mm
-    item1_tx = -pair_offset / 2 if make_pair else 0.0
-    item1_transform = f"1 0 0 0 1 0 0 0 1 {item1_tx:.4f} 0 0"
     build_uuid = uuid.uuid4()
+
+    item1_tx = -pair_offset / 2
+    item1_transform = f"1 0 0 0 1 0 0 0 1 {item1_tx:.4f} 0 0"
+    item2_tx = pair_offset / 2
+    item2_transform = f"1 0 0 0 1 0 0 0 1 {item2_tx:.4f} 0 0"
 
     build_items = (
         f'<item objectid="{parent_id}" p:UUID="{uuid.uuid4()}" '
         f'transform="{item1_transform}"/>'
+        f'<item objectid="{parent_id}" p:UUID="{uuid.uuid4()}" '
+        f'transform="{item2_transform}"/>'
     )
-    if make_pair:
-        item2_tx = pair_offset / 2
-        item2_transform = f"-1 0 0 0 1 0 0 0 1 {item2_tx:.4f} 0 0"
-        build_items += (
-            f'<item objectid="{parent_id}" p:UUID="{uuid.uuid4()}" '
-            f'transform="{item2_transform}"/>'
-        )
 
     model_xml = (
         '<?xml version="1.0" encoding="UTF-8"?>'

@@ -8,13 +8,21 @@
      Review the result below. If you're not satisfied, adjust the number of
      colors and try again.</p>
 
-  <div class="preview-container">
+  <div class="preview-container preview-grid">
     <figure>
       <img src="data:image/png;base64,{{ preview_b64 }}"
            alt="Preview of your image reduced to {{ n_colors }} colors"
            class="preview-image">
       <figcaption>Color-reduced preview ({{ n_colors }} colors)</figcaption>
     </figure>
+    {% if shape_b64 %}
+    <figure>
+      <img src="data:image/png;base64,{{ shape_b64 }}"
+           alt="Shape preview showing earring outline with nub and hole, checkered pattern indicates removed background"
+           class="preview-image">
+      <figcaption>Shape preview (silhouette + nub). Checkered = transparent/removed background.</figcaption>
+    </figure>
+    {% endif %}
   </div>
 
   <div class="palette-display" role="region" aria-label="Color palette used">
@@ -88,14 +96,6 @@
               <input type="number" id="hole-diam" name="hole_diameter_mm"
                      value="1.6" min="0.5" max="5" step="0.1">
             </div>
-          </div>
-        </fieldset>
-
-        <fieldset>
-          <legend>Output options</legend>
-          <div class="form-group checkbox-group">
-            <input type="checkbox" id="make-pair" name="make_pair" checked>
-            <label for="make-pair">Generate mirrored pair (left + right ear)</label>
           </div>
         </fieldset>
 

@@ -12,8 +12,11 @@ from processing import (
     is_svg,
     rasterize_svg,
     reduce_colors,
+    remove_background,
     quantized_to_png_bytes,
+    generate_shape_preview,
     generate_3mf,
+    _make_checker,
     _build_silhouette,
     _mask_to_polygons,
     _extrude,
@@ -80,6 +83,129 @@ class TestRasterizeSvg:
         palette = [(200, 30, 30), (30, 30, 200), (30, 180, 30)]
         data = generate_3mf(png, palette, upscale=1)
         assert len(data) > 100
+
+
+# ── remove_background ──────────────────────────────────────────────────────
+
+class TestRemoveBackground:
+    def test_removes_white_bg(self):
+        # Image with white background and a colored square in the center
+        img = Image.new("RGB", (100, 100), (255, 255, 255))
+        px = img.load()
+        for x in range(30, 70):
+            for y in range(30, 70):
+                px[x, y] = (200, 50, 50)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = remove_background(buf.getvalue())
+        out = Image.open(io.BytesIO(result))
+        assert out.mode == "RGBA"
+        arr = np.array(out)
+        # Corner should be transparent
+        assert arr[0, 0, 3] == 0
+        # Center should be opaque
+        assert arr[50, 50, 3] == 255
+
+    def test_removes_colored_bg(self):
+        # Blue background with red square
+        img = Image.new("RGB", (100, 100), (50, 50, 200))
+        px = img.load()
+        for x in range(30, 70):
+            for y in range(30, 70):
+                px[x, y] = (200, 50, 50)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = remove_background(buf.getvalue())
+        out = np.array(Image.open(io.BytesIO(result)))
+        assert out[0, 0, 3] == 0
+        assert out[50, 50, 3] == 255
+
+    def test_preserves_interior_bg_colored_pixels(self):
+        # White bg, green foreground with a small white region inside
+        img = Image.new("RGB", (100, 100), (255, 255, 255))
+        px = img.load()
+        for x in range(20, 80):
+            for y in range(20, 80):
+                px[x, y] = (30, 180, 30)
+        # White patch inside the foreground
+        for x in range(45, 55):
+            for y in range(45, 55):
+                px[x, y] = (255, 255, 255)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        result = remove_background(buf.getvalue())
+        out = np.array(Image.open(io.BytesIO(result)))
+        # Interior white patch should remain opaque (not removed)
+        assert out[50, 50, 3] == 255
+
+    def test_already_transparent_image(self, sample_png_alpha):
+        # Should still produce valid PNG output
+        result = remove_background(sample_png_alpha)
+        out = Image.open(io.BytesIO(result))
+        assert out.mode == "RGBA"
+
+    def test_returns_bytes(self, sample_png):
+        result = remove_background(sample_png)
+        assert isinstance(result, bytes)
+        assert len(result) > 0
+
+    def test_custom_tolerance(self):
+        img = Image.new("RGB", (80, 80), (240, 240, 240))
+        px = img.load()
+        for x in range(20, 60):
+            for y in range(20, 60):
+                px[x, y] = (100, 50, 50)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        # With tight tolerance, near-white bg should still be removed
+        result = remove_background(buf.getvalue(), tolerance=25)
+        out = np.array(Image.open(io.BytesIO(result)))
+        assert out[0, 0, 3] == 0
+
+
+# ── generate_shape_preview ─────────────────────────────────────────────────
+
+class TestGenerateShapePreview:
+    def test_returns_png(self, sample_png_alpha):
+        result = generate_shape_preview(sample_png_alpha)
+        img = Image.open(io.BytesIO(result))
+        assert img.format == "PNG"
+
+    def test_has_checkered_background(self, sample_png_alpha):
+        result = generate_shape_preview(sample_png_alpha, checker_size=8)
+        arr = np.array(Image.open(io.BytesIO(result)))
+        # Top-left corner (transparent) should be checker colored
+        # Check that it's either (220,220,220) or (255,255,255)
+        tl = tuple(arr[0, 0, :3])
+        assert tl in [(220, 220, 220), (255, 255, 255)]
+
+    def test_nub_extends_image(self, sample_png_alpha):
+        # The output should be at least as tall as input since nub is above
+        img_in = Image.open(io.BytesIO(sample_png_alpha))
+        result = generate_shape_preview(sample_png_alpha)
+        img_out = Image.open(io.BytesIO(result))
+        assert img_out.height >= img_in.height
+
+    def test_works_with_opaque_png(self, sample_png):
+        result = generate_shape_preview(sample_png)
+        assert len(result) > 100
+
+    def test_works_with_jpeg(self, sample_jpeg):
+        result = generate_shape_preview(sample_jpeg)
+        assert len(result) > 100
+
+
+class TestMakeChecker:
+    def test_dimensions(self):
+        c = _make_checker(50, 80, size=10)
+        assert c.shape == (50, 80, 3)
+
+    def test_alternating_pattern(self):
+        c = _make_checker(20, 20, size=10)
+        assert tuple(c[0, 0]) == (220, 220, 220)
+        assert tuple(c[0, 10]) == (255, 255, 255)
+        assert tuple(c[10, 0]) == (255, 255, 255)
+        assert tuple(c[10, 10]) == (220, 220, 220)
 
 
 # ── reduce_colors ──────────────────────────────────────────────────────────
@@ -240,6 +366,26 @@ class TestAddNub:
         )
         assert combined.bounds[3] > 30
 
+    def test_fillet_smooths_junction(self):
+        square = Polygon([(0, 0), (20, 0), (20, 20), (0, 20)])
+        combined_no_fillet, _ = _add_nub(square, fillet_mm=0.0)
+        combined_fillet, _ = _add_nub(square, fillet_mm=2.0)
+        # Fillet should produce a different (smoother) geometry
+        assert not combined_fillet.equals(combined_no_fillet)
+        # Both should still be valid
+        assert combined_fillet.is_valid or combined_fillet.buffer(0).is_valid
+
+    def test_irregular_shape(self):
+        # Star-like irregular shape
+        star = Polygon([
+            (10, 0), (12, 7), (20, 8), (14, 13),
+            (16, 20), (10, 16), (4, 20), (6, 13),
+            (0, 8), (8, 7),
+        ])
+        combined, hole = _add_nub(star, fillet_mm=1.0)
+        assert combined.bounds[3] > star.bounds[3]
+        assert not hole.is_empty
+
 
 # ── _extrude ───────────────────────────────────────────────────────────────
 
@@ -337,19 +483,8 @@ class TestGenerate3mf:
             settings = z.read("Metadata/model_settings.config").decode("utf-8")
             assert "extruder" in settings
 
-    def test_make_pair_false(self, sample_png):
-        data = generate_3mf(
-            sample_png, self._default_palette(), make_pair=False, upscale=1
-        )
-        with zipfile.ZipFile(io.BytesIO(data)) as z:
-            model = z.read("3D/3dmodel.model").decode("utf-8")
-            # Only one <item> in build
-            assert model.count("<item ") == 1
-
-    def test_make_pair_true(self, sample_png):
-        data = generate_3mf(
-            sample_png, self._default_palette(), make_pair=True, upscale=1
-        )
+    def test_two_items_in_build(self, sample_png):
+        data = generate_3mf(sample_png, self._default_palette(), upscale=1)
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             model = z.read("3D/3dmodel.model").decode("utf-8")
             assert model.count("<item ") == 2

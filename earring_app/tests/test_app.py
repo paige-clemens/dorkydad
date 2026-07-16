@@ -122,6 +122,25 @@ class TestUpload:
         assert resp.status_code == 200
         assert b"data:image/png;base64," in resp.data
 
+    def test_upload_with_remove_bg(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "remove_bg": "on",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+        assert "/preview" in resp.headers["Location"]
+
+    def test_upload_without_remove_bg(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+        assert "/preview" in resp.headers["Location"]
+
 
 # ── Preview route ──────────────────────────────────────────────────────────
 
@@ -183,7 +202,6 @@ class TestGenerate:
         form = {
             "target_size_mm": "30",
             "thickness_mm": "1.0",
-            "make_pair": "on",
             "nub_width_mm": "4",
             "nub_height_mm": "5",
             "hole_diameter_mm": "1.6",
@@ -191,19 +209,6 @@ class TestGenerate:
         resp = client.post("/generate", data=form)
         assert resp.status_code == 302
         assert "/download" in resp.headers["Location"]
-
-    def test_generate_single_earring(self, client, sample_png_4_colors):
-        self._upload_and_preview(client, sample_png_4_colors, 3)
-        form = {
-            "target_size_mm": "30",
-            "thickness_mm": "1.0",
-            "nub_width_mm": "4",
-            "nub_height_mm": "5",
-            "hole_diameter_mm": "1.6",
-        }
-        # make_pair not in form → checkbox unchecked
-        resp = client.post("/generate", data=form)
-        assert resp.status_code == 302
 
 
 # ── Download routes ────────────────────────────────────────────────────────
@@ -217,7 +222,6 @@ class TestDownload:
         form = {
             "target_size_mm": "30",
             "thickness_mm": "1.0",
-            "make_pair": "on",
             "nub_width_mm": "4",
             "nub_height_mm": "5",
             "hole_diameter_mm": "1.6",
