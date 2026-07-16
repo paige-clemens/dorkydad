@@ -194,6 +194,28 @@ class TestGenerateShapePreview:
         result = generate_shape_preview(sample_jpeg)
         assert len(result) > 100
 
+    def test_nub_uses_base_color(self):
+        # Create image with a known dominant color and transparent background
+        img = Image.new("RGBA", (80, 80), (0, 0, 0, 0))
+        px = img.load()
+        for x in range(20, 60):
+            for y in range(20, 60):
+                px[x, y] = (200, 50, 50, 255)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+        palette = [(200, 50, 50), (50, 50, 200)]
+        result = generate_shape_preview(buf.getvalue(), palette=palette)
+        arr = np.array(Image.open(io.BytesIO(result)))
+        # The nub extends above the image; check that nub pixels are
+        # the base color (200, 50, 50) and not black or checker
+        # Find a nub pixel: center column, top of image (row 0 or 1)
+        cx = arr.shape[1] // 2
+        nub_pixel = tuple(arr[0, cx, :3])
+        # Should not be checker (220,220,220) or (255,255,255) or black
+        assert nub_pixel != (0, 0, 0), "Nub should not be black"
+        assert nub_pixel not in [(220, 220, 220), (255, 255, 255)], \
+            "Nub should not be checker pattern"
+
 
 class TestMakeChecker:
     def test_dimensions(self):

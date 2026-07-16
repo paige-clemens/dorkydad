@@ -139,6 +139,7 @@ def quantized_to_png_bytes(quantized: np.ndarray) -> bytes:
 
 def generate_shape_preview(
     image_bytes: bytes,
+    palette: list[tuple[int, int, int]] | None = None,
     nub_width_mm: float = 4.0,
     nub_height_mm: float = 5.0,
     hole_diameter_mm: float = 1.6,
@@ -152,6 +153,7 @@ def generate_shape_preview(
     Parameters
     ----------
     image_bytes    : uploaded image (after optional bg removal)
+    palette        : list of (R,G,B) tuples – used to determine base color for nub
     nub_width_mm   : nub width
     nub_height_mm  : nub height
     hole_diameter_mm : hole diameter
@@ -166,9 +168,22 @@ def generate_shape_preview(
     has_alpha = True  # we always convert to RGBA
     silhouette = _build_silhouette(rgba, has_alpha)
 
+    # Determine base color (largest-area palette color inside the silhouette)
+    # This matches the 3MF generator logic for the back-layer color.
+    base_color = np.array([200, 200, 200], dtype=np.uint8)  # fallback gray
+    if palette and len(palette) > 0 and silhouette.any():
+        pal_arr = np.array(palette, dtype=np.uint8)
+        fg_pixels = rgba[:, :, :3][silhouette].astype(np.int32)
+        pal_i32 = pal_arr.astype(np.int32)
+        dists = ((fg_pixels[:, None, :] - pal_i32[None, :, :]) ** 2).sum(axis=2)
+        labels = dists.argmin(axis=1)
+        counts = [int(np.sum(labels == k)) for k in range(len(palette))]
+        base_color = pal_arr[int(np.argmax(counts))]
+
     # Compute nub geometry in pixel space
     # Scale: longest side of silhouette maps to target_size_mm
     combined_mask = silhouette
+    nub_only_mask = None
     sil_geom = _mask_to_polygons(silhouette)
     if sil_geom is not None:
         minx, miny, maxx, maxy = sil_geom.bounds
@@ -229,14 +244,17 @@ def generate_shape_preview(
                 cv2.circle(nub_mask, (attach_x, hole_cy),
                            int(hole_r_px), 0, -1)
 
-                # Combine silhouette + nub
+                # Nub-only pixels (not already part of silhouette)
+                nub_only_mask = (nub_mask > 0) & ~silhouette
                 combined_mask = silhouette | (nub_mask > 0)
 
     # Build checkered background
     checker = _make_checker(H, W, checker_size)
 
-    # Composite: show quantized image where mask is True, checker where False
-    rgb = rgba[:, :, :3]
+    # Composite: image pixels for silhouette, base color for nub, checker elsewhere
+    rgb = rgba[:, :, :3].copy()
+    if nub_only_mask is not None:
+        rgb[nub_only_mask] = base_color
     output = np.where(combined_mask[:, :, None], rgb, checker)
 
     buf = io.BytesIO()

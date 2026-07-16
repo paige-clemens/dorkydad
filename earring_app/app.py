@@ -134,20 +134,17 @@ def preview():
     with open(palette_path, "w") as f:
         json.dump(palette, f)
 
-    preview_png = quantized_to_png_bytes(quantized)
-    preview_b64 = base64.b64encode(preview_png).decode("ascii")
-
-    # Shape preview: silhouette + nub on checkered background
+    # Shape preview: quantized image with nub on checkered background
+    quantized_png = quantized_to_png_bytes(quantized)
     try:
-        shape_png = generate_shape_preview(raw)
-        shape_b64 = base64.b64encode(shape_png).decode("ascii")
+        shape_png = generate_shape_preview(quantized_png, palette=palette)
+        preview_b64 = base64.b64encode(shape_png).decode("ascii")
     except Exception:
-        shape_b64 = None
+        preview_b64 = base64.b64encode(quantized_png).decode("ascii")
 
     return render_template(
         "preview.html",
         preview_b64=preview_b64,
-        shape_b64=shape_b64,
         palette=palette,
         n_colors=n_colors,
     )

@@ -8,21 +8,13 @@
      Review the result below. If you're not satisfied, adjust the number of
      colors and try again.</p>
 
-  <div class="preview-container preview-grid">
+  <div class="preview-container">
     <figure>
       <img src="data:image/png;base64,{{ preview_b64 }}"
-           alt="Preview of your image reduced to {{ n_colors }} colors"
+           alt="Earring preview with {{ n_colors }} colors and nub, checkered pattern indicates removed background"
            class="preview-image">
-      <figcaption>Color-reduced preview ({{ n_colors }} colors)</figcaption>
+      <figcaption>Earring preview ({{ n_colors }} colors + nub). Checkered = transparent/removed background.</figcaption>
     </figure>
-    {% if shape_b64 %}
-    <figure>
-      <img src="data:image/png;base64,{{ shape_b64 }}"
-           alt="Shape preview showing earring outline with nub and hole, checkered pattern indicates removed background"
-           class="preview-image">
-      <figcaption>Shape preview (silhouette + nub). Checkered = transparent/removed background.</figcaption>
-    </figure>
-    {% endif %}
   </div>
 
   <div class="palette-display" role="region" aria-label="Color palette used">

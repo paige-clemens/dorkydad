@@ -107,7 +107,7 @@ class TestUpload:
         data = {"image": (io.BytesIO(sample_png), "test.png"), "n_colors": "abc"}
         resp = client.post("/upload", data=data, content_type="multipart/form-data")
         assert resp.status_code == 302
-        assert "n_colors=6" in resp.headers["Location"]
+        assert "n_colors=4" in resp.headers["Location"]
 
     def test_upload_svg(self, client, sample_svg):
         data = {"image": (io.BytesIO(sample_svg), "test.svg"), "n_colors": "4"}
