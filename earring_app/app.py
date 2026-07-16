@@ -76,6 +76,12 @@ def upload():
         return redirect(url_for("index"))
 
     raw = file.read()
+
+    # Save original filename stem for the output file
+    original_stem = os.path.splitext(file.filename)[0]
+    with open(_session_path("filename.txt"), "w") as f:
+        f.write(original_stem)
+
     # Rasterize SVG to PNG so the rest of the pipeline works on bitmap
     if is_svg(raw):
         try:
@@ -137,7 +143,8 @@ def preview():
     # Shape preview: quantized image with nub on checkered background
     quantized_png = quantized_to_png_bytes(quantized)
     try:
-        shape_png = generate_shape_preview(quantized_png, palette=palette)
+        shape_png = generate_shape_preview(
+            quantized_png, palette=palette, raw_bytes=raw)
         preview_b64 = base64.b64encode(shape_png).decode("ascii")
     except Exception:
         preview_b64 = base64.b64encode(quantized_png).decode("ascii")
@@ -209,11 +216,20 @@ def download_file():
     if not os.path.exists(out):
         flash("File not found.", "error")
         return redirect(url_for("index"))
+    # Read the original filename stem if available
+    name_path = _session_path("filename.txt")
+    if os.path.exists(name_path):
+        with open(name_path, "r") as f:
+            stem = f.read().strip()
+    else:
+        stem = "earring_multicolor"
+    download_name = f"{stem}.3mf"
+
     return send_file(
         out,
         mimetype="application/vnd.ms-package.3dmanufacturing-3dmodel+xml",
         as_attachment=True,
-        download_name="earring_multicolor.3mf",
+        download_name=download_name,
     )
 
 

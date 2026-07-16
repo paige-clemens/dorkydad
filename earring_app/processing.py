@@ -140,122 +140,150 @@ def quantized_to_png_bytes(quantized: np.ndarray) -> bytes:
 def generate_shape_preview(
     image_bytes: bytes,
     palette: list[tuple[int, int, int]] | None = None,
+    *,
+    raw_bytes: bytes | None = None,
     nub_width_mm: float = 4.0,
     nub_height_mm: float = 5.0,
     hole_diameter_mm: float = 1.6,
+    fillet_mm: float = 1.0,
     target_size_mm: float = 39.0,
     checker_size: int = 10,
 ) -> bytes:
     """
     Render a preview showing the earring silhouette with nub on a checkered
-    transparency pattern. Returns PNG bytes.
+    transparency pattern. Uses the same Shapely-based _add_nub with fillet as
+    the 3MF pipeline so the preview matches the final output.
 
     Parameters
     ----------
-    image_bytes    : uploaded image (after optional bg removal)
-    palette        : list of (R,G,B) tuples – used to determine base color for nub
-    nub_width_mm   : nub width
-    nub_height_mm  : nub height
+    image_bytes      : quantized/color-reduced image (used for pixel colors)
+    palette          : list of (R,G,B) tuples – used to determine base color for nub
+    raw_bytes        : original image with alpha (for silhouette detection);
+                       if None, image_bytes is used for both
+    nub_width_mm     : nub width
+    nub_height_mm    : nub height
     hole_diameter_mm : hole diameter
-    target_size_mm : earring target size (for scaling nub proportionally)
-    checker_size   : pixel size of the checker squares
+    fillet_mm        : fillet radius for smooth nub-silhouette junction
+    target_size_mm   : earring target size (for scaling nub proportionally)
+    checker_size     : pixel size of the checker squares
     """
-    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    W, H = img.size
-    rgba = np.array(img)
+    # Load the color image (quantized)
+    color_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    W, H = color_img.size
+    color_rgba = np.array(color_img)
 
-    # Build silhouette
-    has_alpha = True  # we always convert to RGBA
-    silhouette = _build_silhouette(rgba, has_alpha)
+    # Load the raw image for silhouette (has alpha from bg removal)
+    if raw_bytes is not None:
+        sil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
+        # Resize to match quantized if needed
+        if sil_img.size != (W, H):
+            sil_img = sil_img.resize((W, H), Image.LANCZOS)
+        sil_rgba = np.array(sil_img)
+    else:
+        sil_rgba = color_rgba
+
+    # Build silhouette from the raw (alpha-bearing) image
+    silhouette = _build_silhouette(sil_rgba, has_alpha=True)
 
     # Determine base color (largest-area palette color inside the silhouette)
-    # This matches the 3MF generator logic for the back-layer color.
     base_color = np.array([200, 200, 200], dtype=np.uint8)  # fallback gray
     if palette and len(palette) > 0 and silhouette.any():
         pal_arr = np.array(palette, dtype=np.uint8)
-        fg_pixels = rgba[:, :, :3][silhouette].astype(np.int32)
+        fg_pixels = color_rgba[:, :, :3][silhouette].astype(np.int32)
         pal_i32 = pal_arr.astype(np.int32)
         dists = ((fg_pixels[:, None, :] - pal_i32[None, :, :]) ** 2).sum(axis=2)
         labels = dists.argmin(axis=1)
         counts = [int(np.sum(labels == k)) for k in range(len(palette))]
         base_color = pal_arr[int(np.argmax(counts))]
 
-    # Compute nub geometry in pixel space
-    # Scale: longest side of silhouette maps to target_size_mm
-    combined_mask = silhouette
-    nub_only_mask = None
+    # Use Shapely geometry for the nub (matches 3MF pipeline with fillet)
     sil_geom = _mask_to_polygons(silhouette)
-    if sil_geom is not None:
-        minx, miny, maxx, maxy = sil_geom.bounds
-        px_extent = max(maxx - minx, maxy - miny)
-        if px_extent > 0:
-            px_per_mm = px_extent / target_size_mm
-            nub_w_px = nub_width_mm * px_per_mm
-            nub_h_px = nub_height_mm * px_per_mm
-            hole_r_px = (hole_diameter_mm / 2) * px_per_mm
+    if sil_geom is None:
+        # No geometry — just return color image on checker
+        checker = _make_checker(H, W, checker_size)
+        rgb = color_rgba[:, :, :3]
+        output = np.where(silhouette[:, :, None], rgb, checker)
+        buf = io.BytesIO()
+        Image.fromarray(output.astype(np.uint8)).save(buf, format="PNG")
+        return buf.getvalue()
 
-            # Find topmost silhouette pixel (note: in image coords, top = min y)
-            ys, xs = np.where(silhouette)
-            if len(ys) > 0:
-                top_row = int(ys.min())
-                top_cols = xs[ys == top_row]
-                attach_x = int(np.median(top_cols))
-                attach_y = top_row
+    # Scale geometry to mm, add nub with fillet, then scale back to pixels
+    minx, miny, maxx, maxy = sil_geom.bounds
+    px_extent = max(maxx - minx, maxy - miny)
+    px_per_mm = px_extent / target_size_mm
+    s = 1.0 / px_per_mm  # px → mm
 
-                nub_left = int(attach_x - nub_w_px / 2)
-                nub_right = int(attach_x + nub_w_px / 2)
-                nub_top = int(attach_y - nub_h_px)
+    sil_mm = shp_scale(sil_geom, xfact=s, yfact=s, origin=(0, 0))
+    combined_mm, hole_mm = _add_nub(
+        sil_mm,
+        nub_width_mm=nub_width_mm,
+        nub_height_mm=nub_height_mm,
+        hole_diameter_mm=hole_diameter_mm,
+        fillet_mm=fillet_mm,
+    )
 
-                x_start = max(0, nub_left)
-                x_end = min(W, nub_right)
+    # Scale back to pixel space
+    combined_px = shp_scale(combined_mm, xfact=px_per_mm, yfact=px_per_mm, origin=(0, 0))
 
-                # Extend canvas if nub goes above image
-                pad_top = max(0, -nub_top)
-                if pad_top > 0:
-                    pad = np.zeros((pad_top, W, 4), dtype=np.uint8)
-                    rgba = np.vstack([pad, rgba])
-                    silhouette = np.vstack([
-                        np.zeros((pad_top, W), dtype=bool), silhouette
-                    ])
-                    H += pad_top
-                    attach_y += pad_top
-                    nub_top += pad_top
+    # Rasterize the Shapely geometry to a mask
+    # combined_px is in the same coordinate system as the silhouette
+    # (x = col, y = H - row due to the contour extraction flip)
+    cminx, cminy, cmaxx, cmaxy = combined_px.bounds
+    # The geometry may extend above the original image (nub)
+    # Need to compute how much extra space is needed
+    # In _mask_to_polygons, y is flipped: y = H - row, so max y = top of image
+    extra_top_px = int(max(0, cmaxy - H))
+    new_H = H + extra_top_px
 
-                y_start = max(0, nub_top)
+    # Rasterize using cv2.fillPoly
+    def _geom_to_pixel_coords(geom, img_h):
+        """Convert Shapely geometry to pixel row/col arrays for cv2.fillPoly."""
+        polys = []
+        if geom.geom_type == 'Polygon':
+            geom_list = [geom]
+        elif geom.geom_type == 'MultiPolygon':
+            geom_list = list(geom.geoms)
+        else:
+            return [], []
 
-                # Draw nub body (filled rectangle + rounded top)
-                nub_mask = np.zeros((H, W), dtype=np.uint8)
-                cv2.rectangle(nub_mask, (x_start, y_start),
-                              (x_end, attach_y), 255, -1)
-                # Semicircle at top
-                semicircle_cy = y_start + int(nub_w_px / 2)
-                if semicircle_cy > y_start:
-                    cv2.rectangle(nub_mask, (x_start, y_start),
-                                  (x_end, semicircle_cy), 0, -1)
-                    cv2.ellipse(nub_mask,
-                                (attach_x, semicircle_cy),
-                                (int(nub_w_px / 2), int(nub_w_px / 2)),
-                                0, 180, 360, 255, -1)
-                    cv2.rectangle(nub_mask, (x_start, semicircle_cy),
-                                  (x_end, attach_y), 255, -1)
+        shells = []
+        holes = []
+        for poly in geom_list:
+            ext = np.array(poly.exterior.coords)
+            # Convert: col = x, row = img_h - y
+            pts = np.column_stack([ext[:, 0], img_h - ext[:, 1]]).astype(np.int32)
+            shells.append(pts)
+            for interior in poly.interiors:
+                hpts = np.array(interior.coords)
+                hpts = np.column_stack([hpts[:, 0], img_h - hpts[:, 1]]).astype(np.int32)
+                holes.append(hpts)
+        return shells, holes
 
-                # Draw hole (clear circle)
-                hole_cy = semicircle_cy if semicircle_cy > y_start else y_start + int(nub_w_px / 2)
-                cv2.circle(nub_mask, (attach_x, hole_cy),
-                           int(hole_r_px), 0, -1)
+    combined_mask = np.zeros((new_H, W), dtype=np.uint8)
+    shells, holes = _geom_to_pixel_coords(combined_px, new_H)
+    if shells:
+        cv2.fillPoly(combined_mask, shells, 255)
+    if holes:
+        cv2.fillPoly(combined_mask, holes, 0)
+    combined_mask_bool = combined_mask > 0
 
-                # Nub-only pixels (not already part of silhouette)
-                nub_only_mask = (nub_mask > 0) & ~silhouette
-                combined_mask = silhouette | (nub_mask > 0)
+    # Extend color image canvas to match new height
+    if extra_top_px > 0:
+        pad = np.zeros((extra_top_px, W, 4), dtype=np.uint8)
+        color_rgba = np.vstack([pad, color_rgba])
+        silhouette = np.vstack([
+            np.zeros((extra_top_px, W), dtype=bool), silhouette
+        ])
 
     # Build checkered background
-    checker = _make_checker(H, W, checker_size)
+    checker = _make_checker(new_H, W, checker_size)
 
-    # Composite: image pixels for silhouette, base color for nub, checker elsewhere
-    rgb = rgba[:, :, :3].copy()
-    if nub_only_mask is not None:
-        rgb[nub_only_mask] = base_color
-    output = np.where(combined_mask[:, :, None], rgb, checker)
+    # Composite: silhouette pixels get color image, nub-only gets base_color,
+    # everywhere else gets checker
+    rgb = color_rgba[:, :, :3].copy()
+    nub_only = combined_mask_bool & ~silhouette
+    rgb[nub_only] = base_color
+    output = np.where(combined_mask_bool[:, :, None], rgb, checker)
 
     buf = io.BytesIO()
     Image.fromarray(output.astype(np.uint8)).save(buf, format="PNG")
