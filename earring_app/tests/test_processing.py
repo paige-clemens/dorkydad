@@ -415,6 +415,16 @@ class TestAddNub:
         assert combined.bounds[3] > star.bounds[3]
         assert not hole.is_empty
 
+    def test_nub_position_left_right(self):
+        # Wide rectangle: left/center/right produce distinct attach points
+        poly = Polygon([(0, 0), (20, 0), (20, 10), (0, 10)])
+        combined_l, hole_l = _add_nub(poly, nub_position="left")
+        combined_r, hole_r = _add_nub(poly, nub_position="right")
+        # Hole center x should differ: left hole is to the left of right hole
+        lx = hole_l.centroid.x
+        rx = hole_r.centroid.x
+        assert lx < rx
+
 
 # ── _extrude ───────────────────────────────────────────────────────────────
 
@@ -511,6 +521,20 @@ class TestGenerate3mf:
         with zipfile.ZipFile(io.BytesIO(data)) as z:
             settings = z.read("Metadata/model_settings.config").decode("utf-8")
             assert "extruder" in settings
+
+    def test_both_earrings_have_settings(self, sample_png):
+        data = generate_3mf(sample_png, self._default_palette(), upscale=1)
+        with zipfile.ZipFile(io.BytesIO(data)) as z:
+            settings = z.read("Metadata/model_settings.config").decode("utf-8")
+            root = ET.fromstring(settings)
+            objects = root.findall("object")
+            assert len(objects) == 2
+            for obj in objects:
+                parts = obj.findall("part")
+                assert len(parts) >= 1
+                for part in parts:
+                    metas = {m.get("key"): m.get("value") for m in part.findall("metadata")}
+                    assert "extruder" in metas
 
     def test_two_items_in_build(self, sample_png):
         data = generate_3mf(sample_png, self._default_palette(), upscale=1)

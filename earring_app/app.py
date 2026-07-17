@@ -92,8 +92,10 @@ def upload():
 
     # Optionally remove background
     if request.form.get("remove_bg") == "on":
+        bg_tolerance = request.form.get("bg_tolerance", 20, type=int)
+        bg_tolerance = max(5, min(60, bg_tolerance))
         try:
-            raw = remove_background(raw)
+            raw = remove_background(raw, tolerance=bg_tolerance)
         except Exception as exc:
             flash(f"Background removal failed: {exc}", "error")
             return redirect(url_for("index"))
@@ -112,6 +114,22 @@ def upload():
     except ValueError:
         n_colors = 4
 
+    # Save earring config so preview and generate can use it
+    nub_position = request.form.get("nub_position", "center")
+    if nub_position not in ("left", "center", "right"):
+        nub_position = "center"
+
+    config = {
+        "target_size_mm": request.form.get("target_size_mm", 39.0, type=float),
+        "thickness_mm": request.form.get("thickness_mm", 1.0, type=float),
+        "nub_width_mm": request.form.get("nub_width_mm", 4.0, type=float),
+        "nub_height_mm": request.form.get("nub_height_mm", 5.0, type=float),
+        "hole_diameter_mm": request.form.get("hole_diameter_mm", 1.6, type=float),
+        "nub_position": nub_position,
+    }
+    with open(_session_path("config.json"), "w") as f:
+        json.dump(config, f)
+
     return redirect(url_for("preview", n_colors=n_colors))
 
 
@@ -129,6 +147,20 @@ def preview():
     with open(path, "rb") as f:
         raw = f.read()
 
+    # Load earring config (saved at upload time)
+    config_path = _session_path("config.json")
+    if os.path.exists(config_path):
+        with open(config_path, "r") as f:
+            config = json.load(f)
+    else:
+        config = {}
+    target_size_mm = config.get("target_size_mm", 39.0)
+    thickness_mm = config.get("thickness_mm", 1.0)
+    nub_width_mm = config.get("nub_width_mm", 4.0)
+    nub_height_mm = config.get("nub_height_mm", 5.0)
+    hole_diameter_mm = config.get("hole_diameter_mm", 1.6)
+    nub_position = config.get("nub_position", "center")
+
     try:
         quantized, palette = reduce_colors(raw, n_colors)
     except Exception as exc:
@@ -144,7 +176,15 @@ def preview():
     quantized_png = quantized_to_png_bytes(quantized)
     try:
         shape_png = generate_shape_preview(
-            quantized_png, palette=palette, raw_bytes=raw)
+            quantized_png,
+            palette=palette,
+            raw_bytes=raw,
+            target_size_mm=target_size_mm,
+            nub_width_mm=nub_width_mm,
+            nub_height_mm=nub_height_mm,
+            hole_diameter_mm=hole_diameter_mm,
+            nub_position=nub_position,
+        )
         preview_b64 = base64.b64encode(shape_png).decode("ascii")
     except Exception:
         preview_b64 = base64.b64encode(quantized_png).decode("ascii")
@@ -154,6 +194,12 @@ def preview():
         preview_b64=preview_b64,
         palette=palette,
         n_colors=n_colors,
+        target_size_mm=target_size_mm,
+        thickness_mm=thickness_mm,
+        nub_width_mm=nub_width_mm,
+        nub_height_mm=nub_height_mm,
+        hole_diameter_mm=hole_diameter_mm,
+        nub_position=nub_position,
     )
 
 
@@ -177,6 +223,9 @@ def generate():
     nub_width_mm = request.form.get("nub_width_mm", 4.0, type=float)
     nub_height_mm = request.form.get("nub_height_mm", 5.0, type=float)
     hole_diameter_mm = request.form.get("hole_diameter_mm", 1.6, type=float)
+    nub_position = request.form.get("nub_position", "center")
+    if nub_position not in ("left", "center", "right"):
+        nub_position = "center"
 
     try:
         data = generate_3mf(
@@ -187,6 +236,7 @@ def generate():
             nub_width_mm=nub_width_mm,
             nub_height_mm=nub_height_mm,
             hole_diameter_mm=hole_diameter_mm,
+            nub_position=nub_position,
         )
     except Exception as exc:
         flash(f"3MF generation failed: {exc}", "error")

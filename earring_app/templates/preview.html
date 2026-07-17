@@ -3,17 +3,17 @@
 
 {% block content %}
 <section class="card" aria-labelledby="preview-heading">
-  <h1 id="preview-heading">Color-Reduced Preview</h1>
-  <p>Your image has been reduced to <strong>{{ n_colors }}</strong> colors.
-     Review the result below. If you're not satisfied, adjust the number of
-     colors and try again.</p>
+  <h1 id="preview-heading">3MF Preview</h1>
+  <p>This is how your earring will look when printed — <strong>{{ n_colors }}</strong> colors,
+     each pixel snapped to the nearest filament slot.
+     If you're not satisfied, adjust the number of colors and try again.</p>
 
   <div class="preview-container">
     <figure>
       <img src="data:image/png;base64,{{ preview_b64 }}"
-           alt="Earring preview with {{ n_colors }} colors and nub, checkered pattern indicates removed background"
+           alt="Earring 3MF preview with {{ n_colors }} colors and nub, checkered pattern shows where background was removed"
            class="preview-image">
-      <figcaption>Earring preview ({{ n_colors }} colors + nub). Checkered = transparent/removed background.</figcaption>
+      <figcaption>Print preview ({{ n_colors }} colors). Checkered = transparent background. Nub color matches the base layer.</figcaption>
     </figure>
   </div>
 
@@ -63,12 +63,12 @@
             <div class="form-group">
               <label for="target-size">Size (mm, longest side)</label>
               <input type="number" id="target-size" name="target_size_mm"
-                     value="39" min="5" max="200" step="0.5">
+                     value="{{ target_size_mm }}" min="5" max="200" step="0.5">
             </div>
             <div class="form-group">
               <label for="thickness">Thickness (mm)</label>
               <input type="number" id="thickness" name="thickness_mm"
-                     value="1.0" min="0.4" max="5" step="0.1">
+                     value="{{ thickness_mm }}" min="0.4" max="5" step="0.1">
             </div>
           </div>
 
@@ -76,17 +76,25 @@
             <div class="form-group">
               <label for="nub-width">Nub width (mm)</label>
               <input type="number" id="nub-width" name="nub_width_mm"
-                     value="4.0" min="2" max="20" step="0.5">
+                     value="{{ nub_width_mm }}" min="2" max="20" step="0.5">
             </div>
             <div class="form-group">
               <label for="nub-height">Nub height (mm)</label>
               <input type="number" id="nub-height" name="nub_height_mm"
-                     value="5.0" min="2" max="20" step="0.5">
+                     value="{{ nub_height_mm }}" min="2" max="20" step="0.5">
             </div>
             <div class="form-group">
               <label for="hole-diam">Hole diameter (mm)</label>
               <input type="number" id="hole-diam" name="hole_diameter_mm"
-                     value="1.6" min="0.5" max="5" step="0.1">
+                     value="{{ hole_diameter_mm }}" min="0.5" max="5" step="0.1">
+            </div>
+            <div class="form-group">
+              <label for="nub-position">Nub position</label>
+              <select id="nub-position" name="nub_position">
+                <option value="center" {{ 'selected' if nub_position == 'center' }}>Center</option>
+                <option value="left" {{ 'selected' if nub_position == 'left' }}>Left</option>
+                <option value="right" {{ 'selected' if nub_position == 'right' }}>Right</option>
+              </select>
             </div>
           </div>
         </fieldset>

@@ -46,7 +46,74 @@
       </span>
     </div>
 
+    <div class="form-group">
+      <label for="bg-tolerance">Background removal aggressiveness</label>
+      <span id="tolerance-help" class="help-text">
+        How aggressively to remove the background. Low = only exact matches,
+        High = removes similar colors too. Only applies when "Remove background" is checked.
+      </span>
+      <input type="range" id="bg-tolerance" name="bg_tolerance"
+             value="20" min="5" max="60" step="1"
+             aria-describedby="tolerance-help">
+      <output for="bg-tolerance">20</output>
+    </div>
+
+    <fieldset>
+      <legend>Earring dimensions</legend>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="target-size">Size (mm, longest side)</label>
+          <input type="number" id="target-size" name="target_size_mm"
+                 value="39" min="5" max="200" step="0.5">
+        </div>
+        <div class="form-group">
+          <label for="thickness">Thickness (mm)</label>
+          <input type="number" id="thickness" name="thickness_mm"
+                 value="1.0" min="0.4" max="5" step="0.1">
+        </div>
+      </div>
+
+      <div class="form-row">
+        <div class="form-group">
+          <label for="nub-width">Nub width (mm)</label>
+          <input type="number" id="nub-width" name="nub_width_mm"
+                 value="4.0" min="2" max="20" step="0.5">
+        </div>
+        <div class="form-group">
+          <label for="nub-height">Nub height (mm)</label>
+          <input type="number" id="nub-height" name="nub_height_mm"
+                 value="5.0" min="2" max="20" step="0.5">
+        </div>
+        <div class="form-group">
+          <label for="hole-diam">Hole diameter (mm)</label>
+          <input type="number" id="hole-diam" name="hole_diameter_mm"
+                 value="1.6" min="0.5" max="5" step="0.1">
+        </div>
+        <div class="form-group">
+          <label for="nub-position">Nub position</label>
+          <select id="nub-position" name="nub_position">
+            <option value="center" selected>Center</option>
+            <option value="left">Left</option>
+            <option value="right">Right</option>
+          </select>
+        </div>
+      </div>
+    </fieldset>
+
     <button type="submit" class="btn btn-primary">Upload &amp; Preview</button>
   </form>
 </section>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  (function() {
+    var slider = document.getElementById('bg-tolerance');
+    var output = slider ? slider.nextElementSibling : null;
+    if (slider && output && output.tagName === 'OUTPUT') {
+      slider.addEventListener('input', function() { output.textContent = slider.value; });
+    }
+  })();
+</script>
 {% endblock %}

@@ -141,6 +141,39 @@ class TestUpload:
         assert resp.status_code == 302
         assert "/preview" in resp.headers["Location"]
 
+    def test_upload_saves_config(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "target_size_mm": "25",
+            "nub_width_mm": "6",
+            "nub_height_mm": "7",
+            "hole_diameter_mm": "2.0",
+            "thickness_mm": "1.5",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+
+    def test_upload_with_bg_tolerance(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "remove_bg": "on",
+            "bg_tolerance": "40",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+        assert "/preview" in resp.headers["Location"]
+
+    def test_upload_saves_nub_position(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "nub_position": "left",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+
 
 # ── Preview route ──────────────────────────────────────────────────────────
 
@@ -181,6 +214,29 @@ class TestPreview:
         self._upload(client, sample_png, 3)
         resp = client.get("/preview?n_colors=3")
         assert b"/generate" in resp.data
+
+    def test_preview_shows_config_values(self, client, sample_png):
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "target_size_mm": "25.0",
+            "nub_width_mm": "6.0",
+            "nub_height_mm": "7.0",
+            "hole_diameter_mm": "2.0",
+            "thickness_mm": "1.5",
+            "nub_position": "right",
+        }
+        client.post("/upload", data=data, content_type="multipart/form-data")
+        resp = client.get("/preview?n_colors=3")
+        assert resp.status_code == 200
+        html = resp.data.decode("utf-8")
+        assert 'value="25.0"' in html
+        assert 'value="6.0"' in html
+        assert 'value="7.0"' in html
+        assert 'value="2.0"' in html
+        assert 'value="1.5"' in html
+        assert 'value="right" selected' in html or \
+               "value=\"right\" selected" in html
 
 
 # ── Generate route ─────────────────────────────────────────────────────────

@@ -148,16 +148,20 @@ def generate_shape_preview(
     fillet_mm: float = 1.0,
     target_size_mm: float = 39.0,
     checker_size: int = 10,
+    dark_override_max: int = 70,
+    black_dilate_px: int = 1,
+    nub_position: str = "center",
 ) -> bytes:
     """
-    Render a preview showing the earring silhouette with nub on a checkered
-    transparency pattern. Uses the same Shapely-based _add_nub with fillet as
-    the 3MF pipeline so the preview matches the final output.
+    Render a top-down preview that matches the 3MF output: each foreground
+    pixel is snapped to its nearest palette color (with black-priority pass),
+    the nub is rendered with the base color and smooth fillet, and the
+    background is a checkered transparency pattern.  Returns PNG bytes.
 
     Parameters
     ----------
     image_bytes      : quantized/color-reduced image (used for pixel colors)
-    palette          : list of (R,G,B) tuples – used to determine base color for nub
+    palette          : list of (R,G,B) tuples – palette from color reduction
     raw_bytes        : original image with alpha (for silhouette detection);
                        if None, image_bytes is used for both
     nub_width_mm     : nub width
@@ -166,6 +170,9 @@ def generate_shape_preview(
     fillet_mm        : fillet radius for smooth nub-silhouette junction
     target_size_mm   : earring target size (for scaling nub proportionally)
     checker_size     : pixel size of the checker squares
+    dark_override_max : max channel value to treat as "dark" for black override
+    black_dilate_px  : dilation radius for black-priority pass
+    nub_position     : "left", "center", or "right" horizontal nub placement
     """
     # Load the color image (quantized)
     color_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
@@ -175,7 +182,6 @@ def generate_shape_preview(
     # Load the raw image for silhouette (has alpha from bg removal)
     if raw_bytes is not None:
         sil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
-        # Resize to match quantized if needed
         if sil_img.size != (W, H):
             sil_img = sil_img.resize((W, H), Image.LANCZOS)
         sil_rgba = np.array(sil_img)
@@ -185,33 +191,66 @@ def generate_shape_preview(
     # Build silhouette from the raw (alpha-bearing) image
     silhouette = _build_silhouette(sil_rgba, has_alpha=True)
 
-    # Determine base color (largest-area palette color inside the silhouette)
-    base_color = np.array([200, 200, 200], dtype=np.uint8)  # fallback gray
+    # ── Palette-snap every pixel (mirrors generate_3mf logic) ──
+    rgb = color_rgba[:, :, :3].copy()
+    base_color = np.array([200, 200, 200], dtype=np.uint8)  # fallback
     if palette and len(palette) > 0 and silhouette.any():
         pal_arr = np.array(palette, dtype=np.uint8)
-        fg_pixels = color_rgba[:, :, :3][silhouette].astype(np.int32)
         pal_i32 = pal_arr.astype(np.int32)
-        dists = ((fg_pixels[:, None, :] - pal_i32[None, :, :]) ** 2).sum(axis=2)
-        labels = dists.argmin(axis=1)
-        counts = [int(np.sum(labels == k)) for k in range(len(palette))]
-        base_color = pal_arr[int(np.argmax(counts))]
+        n_colors = len(palette)
 
-    # Use Shapely geometry for the nub (matches 3MF pipeline with fillet)
+        # Nearest-color quantisation
+        flat_rgb = rgb.reshape(-1, 3).astype(np.int32)
+        dists = ((flat_rgb[:, None, :] - pal_i32[None, :, :]) ** 2).sum(axis=2)
+        labels_full = dists.argmin(axis=1).reshape(H, W)
+        labels = np.where(silhouette, labels_full, -1)
+
+        # Black-priority pass (same as generate_3mf)
+        black_idx = None
+        darkest_brightness = 999
+        for i, c in enumerate(palette):
+            brightness = max(c)
+            if brightness < darkest_brightness:
+                darkest_brightness = brightness
+                darkest_idx = i
+        if darkest_brightness < 80:
+            black_idx = darkest_idx
+
+        if black_idx is not None:
+            dark = silhouette & (rgb.max(axis=2) <= dark_override_max)
+            labels = np.where(dark, black_idx, labels)
+            if black_dilate_px > 0:
+                bm = (labels == black_idx).astype(np.uint8)
+                kernel = np.ones(
+                    (2 * black_dilate_px + 1, 2 * black_dilate_px + 1), np.uint8)
+                bm_dil = cv2.dilate(bm, kernel, iterations=1)
+                bm_dil = bm_dil & silhouette.astype(np.uint8)
+                labels = np.where(bm_dil > 0, black_idx, labels)
+
+        # Base color = largest area
+        counts = [int(np.sum(labels == k)) for k in range(n_colors)]
+        base_color_idx = int(np.argmax(counts))
+        base_color = pal_arr[base_color_idx]
+
+        # Paint each pixel with its palette color
+        snapped = np.zeros_like(rgb)
+        for k in range(n_colors):
+            snapped[labels == k] = pal_arr[k]
+        rgb = snapped
+
+    # ── Nub geometry via Shapely (matches generate_3mf) ──
     sil_geom = _mask_to_polygons(silhouette)
     if sil_geom is None:
-        # No geometry — just return color image on checker
         checker = _make_checker(H, W, checker_size)
-        rgb = color_rgba[:, :, :3]
         output = np.where(silhouette[:, :, None], rgb, checker)
         buf = io.BytesIO()
         Image.fromarray(output.astype(np.uint8)).save(buf, format="PNG")
         return buf.getvalue()
 
-    # Scale geometry to mm, add nub with fillet, then scale back to pixels
     minx, miny, maxx, maxy = sil_geom.bounds
     px_extent = max(maxx - minx, maxy - miny)
     px_per_mm = px_extent / target_size_mm
-    s = 1.0 / px_per_mm  # px → mm
+    s = 1.0 / px_per_mm
 
     sil_mm = shp_scale(sil_geom, xfact=s, yfact=s, origin=(0, 0))
     combined_mm, hole_mm = _add_nub(
@@ -220,37 +259,25 @@ def generate_shape_preview(
         nub_height_mm=nub_height_mm,
         hole_diameter_mm=hole_diameter_mm,
         fillet_mm=fillet_mm,
+        nub_position=nub_position,
     )
-
-    # Scale back to pixel space
     combined_px = shp_scale(combined_mm, xfact=px_per_mm, yfact=px_per_mm, origin=(0, 0))
 
-    # Rasterize the Shapely geometry to a mask
-    # combined_px is in the same coordinate system as the silhouette
-    # (x = col, y = H - row due to the contour extraction flip)
+    # Rasterize Shapely geometry to pixel mask
     cminx, cminy, cmaxx, cmaxy = combined_px.bounds
-    # The geometry may extend above the original image (nub)
-    # Need to compute how much extra space is needed
-    # In _mask_to_polygons, y is flipped: y = H - row, so max y = top of image
     extra_top_px = int(max(0, cmaxy - H))
     new_H = H + extra_top_px
 
-    # Rasterize using cv2.fillPoly
     def _geom_to_pixel_coords(geom, img_h):
-        """Convert Shapely geometry to pixel row/col arrays for cv2.fillPoly."""
-        polys = []
         if geom.geom_type == 'Polygon':
             geom_list = [geom]
         elif geom.geom_type == 'MultiPolygon':
             geom_list = list(geom.geoms)
         else:
             return [], []
-
-        shells = []
-        holes = []
+        shells, holes = [], []
         for poly in geom_list:
             ext = np.array(poly.exterior.coords)
-            # Convert: col = x, row = img_h - y
             pts = np.column_stack([ext[:, 0], img_h - ext[:, 1]]).astype(np.int32)
             shells.append(pts)
             for interior in poly.interiors:
@@ -267,20 +294,16 @@ def generate_shape_preview(
         cv2.fillPoly(combined_mask, holes, 0)
     combined_mask_bool = combined_mask > 0
 
-    # Extend color image canvas to match new height
+    # Extend canvases for nub padding
     if extra_top_px > 0:
-        pad = np.zeros((extra_top_px, W, 4), dtype=np.uint8)
-        color_rgba = np.vstack([pad, color_rgba])
+        rgb = np.vstack([np.zeros((extra_top_px, W, 3), dtype=np.uint8), rgb])
         silhouette = np.vstack([
             np.zeros((extra_top_px, W), dtype=bool), silhouette
         ])
 
-    # Build checkered background
+    # Composite: palette-snapped colors for silhouette, base color for nub,
+    # checkered pattern everywhere else
     checker = _make_checker(new_H, W, checker_size)
-
-    # Composite: silhouette pixels get color image, nub-only gets base_color,
-    # everywhere else gets checker
-    rgb = color_rgba[:, :, :3].copy()
     nub_only = combined_mask_bool & ~silhouette
     rgb[nub_only] = base_color
     output = np.where(combined_mask_bool[:, :, None], rgb, checker)
@@ -433,19 +456,37 @@ def _extrude(g, height: float, z0: float = 0.0):
 # ---------------------------------------------------------------------------
 
 def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
-             hole_diameter_mm: float = 1.6, fillet_mm: float = 1.0):
+             hole_diameter_mm: float = 1.6, fillet_mm: float = 1.0,
+             nub_position: str = "center"):
     """
-    Add a nub at the topmost point of the silhouette, smoothly blended into
-    the silhouette contour with a fillet so the junction is seamless even on
+    Add a nub at the top of the silhouette, smoothly blended into the
+    silhouette contour with a fillet so the junction is seamless even on
     irregular shapes. Punch a hole through it for earring attachment.
+
+    nub_position controls horizontal placement:
+      "center" – topmost point (default)
+      "left"   – leftmost among the topmost points
+      "right"  – rightmost among the topmost points
 
     Returns (modified_sil_geom, hole_geometry).
     """
-    # Find the topmost point of the silhouette boundary
+    # Find the topmost points of the silhouette boundary
     coords = _outline_coords(sil_geom)
-    top_i = int(np.argmax(coords[:, 1]))
-    attach_x = float(coords[top_i, 0])
-    attach_y = float(coords[top_i, 1])
+    max_y = float(coords[:, 1].max())
+    # Points within a small tolerance of the top edge
+    top_tol = (max_y - float(coords[:, 1].min())) * 0.02
+    top_mask = coords[:, 1] >= (max_y - top_tol)
+    top_coords = coords[top_mask]
+
+    if nub_position == "left":
+        pick_i = int(np.argmin(top_coords[:, 0]))
+    elif nub_position == "right":
+        pick_i = int(np.argmax(top_coords[:, 0]))
+    else:  # center
+        pick_i = int(np.argmax(top_coords[:, 1]))
+
+    attach_x = float(top_coords[pick_i, 0])
+    attach_y = float(top_coords[pick_i, 1])
 
     # Build the nub stem: a rectangle topped with a semicircle
     hw = nub_width_mm / 2
@@ -558,6 +599,7 @@ def generate_3mf(
     dark_override_max: int = 70,
     black_dilate_px: int = 1,
     object_name: str = "earring",
+    nub_position: str = "center",
 ) -> bytes:
     """
     Full pipeline: image bytes + palette → 3MF file bytes.
@@ -577,6 +619,7 @@ def generate_3mf(
     dark_override_max : pixels darker than this → black slot
     black_dilate_px   : dilate black outlines by this many px
     object_name   : name embedded in the 3MF
+    nub_position  : "left", "center", or "right" horizontal nub placement
 
     Returns
     -------
@@ -667,6 +710,7 @@ def generate_3mf(
         nub_width_mm=nub_width_mm,
         nub_height_mm=nub_height_mm,
         hole_diameter_mm=hole_diameter_mm,
+        nub_position=nub_position,
     )
     color_geoms = {k: g.difference(hole) for k, g in color_geoms.items()}
 
@@ -715,7 +759,8 @@ def generate_3mf(
         parts.append((name, top_meshes[k], slot))
 
     leaf_ids = list(range(1, len(parts) + 1))
-    parent_id = len(parts) + 1
+    parent_id_1 = len(parts) + 1
+    parent_id_2 = len(parts) + 2
 
     leaf_objects = []
     for (name, mesh, _slot), oid in zip(parts, leaf_ids):
@@ -727,8 +772,12 @@ def generate_3mf(
     components = "".join(
         f'<component objectid="{oid}"/>' for oid in leaf_ids
     )
-    parent_object = (
-        f'<object id="{parent_id}" name="{object_name}" type="model" '
+    parent_object_1 = (
+        f'<object id="{parent_id_1}" name="{object_name}_1" type="model" '
+        f'p:UUID="{uuid.uuid4()}"><components>{components}</components></object>'
+    )
+    parent_object_2 = (
+        f'<object id="{parent_id_2}" name="{object_name}_2" type="model" '
         f'p:UUID="{uuid.uuid4()}"><components>{components}</components></object>'
     )
 
@@ -743,9 +792,9 @@ def generate_3mf(
     item2_transform = f"1 0 0 0 1 0 0 0 1 {item2_tx:.4f} 0 0"
 
     build_items = (
-        f'<item objectid="{parent_id}" p:UUID="{uuid.uuid4()}" '
+        f'<item objectid="{parent_id_1}" p:UUID="{uuid.uuid4()}" '
         f'transform="{item1_transform}"/>'
-        f'<item objectid="{parent_id}" p:UUID="{uuid.uuid4()}" '
+        f'<item objectid="{parent_id_2}" p:UUID="{uuid.uuid4()}" '
         f'transform="{item2_transform}"/>'
     )
 
@@ -757,7 +806,8 @@ def generate_3mf(
         '<metadata name="Application">earring-web-app</metadata>'
         '<resources>'
         + "".join(leaf_objects)
-        + parent_object
+        + parent_object_1
+        + parent_object_2
         + '</resources>'
         f'<build p:UUID="{build_uuid}">'
         + build_items
@@ -765,29 +815,36 @@ def generate_3mf(
         '</model>'
     )
 
-    part_xml_blocks = []
-    for (name, _mesh, slot), oid in zip(parts, leaf_ids):
-        part_xml_blocks.append(
-            f'<part id="{oid}" subtype="normal_part">'
-            f'<metadata key="name" value="{name}"/>'
-            f'<metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>'
-            f'<metadata key="source_file" value=""/>'
-            f'<metadata key="source_object_id" value="0"/>'
-            f'<metadata key="source_volume_id" value="{oid - 1}"/>'
-            f'<metadata key="source_offset_x" value="0"/>'
-            f'<metadata key="source_offset_y" value="0"/>'
-            f'<metadata key="source_offset_z" value="0"/>'
-            f'<metadata key="extruder" value="{slot}"/>'
-            f'</part>'
-        )
+    def _part_xml_blocks_for(parent_name):
+        blocks = []
+        for (name, _mesh, slot), oid in zip(parts, leaf_ids):
+            blocks.append(
+                f'<part id="{oid}" subtype="normal_part">'
+                f'<metadata key="name" value="{name}"/>'
+                f'<metadata key="matrix" value="1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1"/>'
+                f'<metadata key="source_file" value=""/>'
+                f'<metadata key="source_object_id" value="0"/>'
+                f'<metadata key="source_volume_id" value="{oid - 1}"/>'
+                f'<metadata key="source_offset_x" value="0"/>'
+                f'<metadata key="source_offset_y" value="0"/>'
+                f'<metadata key="source_offset_z" value="0"/>'
+                f'<metadata key="extruder" value="{slot}"/>'
+                f'</part>'
+            )
+        return blocks
 
     model_settings = (
         '<?xml version="1.0" encoding="UTF-8"?>'
         '<config>'
-        f'<object id="{parent_id}">'
-        f'<metadata key="name" value="{object_name}"/>'
+        f'<object id="{parent_id_1}">'
+        f'<metadata key="name" value="{object_name}_1"/>'
         '<metadata key="extruder" value="1"/>'
-        + "".join(part_xml_blocks)
+        + "".join(_part_xml_blocks_for(f"{object_name}_1"))
+        + '</object>'
+        f'<object id="{parent_id_2}">'
+        f'<metadata key="name" value="{object_name}_2"/>'
+        '<metadata key="extruder" value="1"/>'
+        + "".join(_part_xml_blocks_for(f"{object_name}_2"))
         + '</object></config>'
     )
 
