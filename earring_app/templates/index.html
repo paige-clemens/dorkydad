@@ -8,6 +8,7 @@
      ready for 3D printing, complete with an earring hanging nub.</p>
 
   <form action="{{ url_for('upload') }}" method="post" enctype="multipart/form-data"
+        class="upload-form"
         aria-describedby="upload-help">
 
     <div class="form-group">
@@ -47,15 +48,26 @@
     </div>
 
     <div class="form-group">
+      <label for="bg-removal-mode">Background removal method</label>
+      <select id="bg-removal-mode" name="bg_removal_mode">
+        <option value="color" selected>Color tolerance</option>
+        <option value="ai">AI automatic (local)</option>
+      </select>
+      <span class="help-text">
+        AI automatic uses the lightweight local U2NetP model and may take longer on the first image while it downloads the model.
+      </span>
+    </div>
+
+    <div class="form-group">
       <label for="bg-tolerance">Background removal aggressiveness</label>
       <span id="tolerance-help" class="help-text">
-        How aggressively to remove the background. Low = only exact matches,
+        How aggressively to remove the background (1–100). Low = only exact matches,
         High = removes similar colors too. Only applies when "Remove background" is checked.
       </span>
       <input type="range" id="bg-tolerance" name="bg_tolerance"
-             value="20" min="5" max="60" step="1"
+             value="25" min="1" max="100" step="1"
              aria-describedby="tolerance-help">
-      <output for="bg-tolerance">20</output>
+      <output for="bg-tolerance">25</output>
     </div>
 
     <fieldset>
@@ -98,12 +110,23 @@
             <option value="right">Right</option>
           </select>
         </div>
+        <div class="form-group">
+          <label for="nub-offset">Nub offset (mm)</label>
+          <input type="number" id="nub-offset" name="nub_offset_mm"
+                 value="0" min="-50" max="50" step="0.5">
+        </div>
       </div>
     </fieldset>
 
     <button type="submit" class="btn btn-primary">Upload &amp; Preview</button>
   </form>
 </section>
+
+<div class="loading-overlay" id="upload-overlay" aria-live="polite" aria-busy="true">
+  <div class="loading-spinner" role="status" aria-label="Loading"></div>
+  <p class="loading-message">Preparing your preview…</p>
+  <p class="loading-stage" id="upload-stage">Removing background</p>
+</div>
 {% endblock %}
 
 {% block scripts %}
@@ -113,6 +136,22 @@
     var output = slider ? slider.nextElementSibling : null;
     if (slider && output && output.tagName === 'OUTPUT') {
       slider.addEventListener('input', function() { output.textContent = slider.value; });
+    }
+
+    var form = document.querySelector('.upload-form');
+    var overlay = document.getElementById('upload-overlay');
+    var stage = document.getElementById('upload-stage');
+    var stages = ['Removing background', 'Reducing colors', 'Building preview'];
+    if (form && overlay) {
+      form.addEventListener('submit', function() {
+        overlay.classList.add('is-active');
+        var i = 0;
+        stage.textContent = stages[0];
+        setInterval(function() {
+          i = (i + 1) % stages.length;
+          stage.textContent = stages[i];
+        }, 1200);
+      });
     }
   })();
 </script>

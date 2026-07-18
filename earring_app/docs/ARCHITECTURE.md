@@ -58,19 +58,21 @@ Single stylesheet using CSS custom properties for theming. Three themes: light (
 ```
 Upload (PNG/JPEG/SVG)
   → [rasterize_svg if SVG]
-  → [remove_background(tolerance=bg_tolerance) if checked]
-  → save raw bytes + config.json (earring dimensions + nub_position) to session dir
+  → [remove_background(tolerance=bg_tolerance, clamped to 1–100) or remove_background_ai(U2NetP via ONNX Runtime) if checked]
+  → _cap_image_dimension(raw, 512) keeps longest side ≤ 512 px
+  → save raw bytes + config.json (earring dimensions + nub_position + nub_offset_mm) to session dir
   → redirect to /preview
 
 Preview
-  → load config.json (target_size_mm, nub_width_mm, nub_height_mm, hole_diameter_mm, thickness_mm)
-  → reduce_colors(raw, n_colors) → quantized array + palette
+  → load config.json (target_size_mm, nub_width_mm, nub_height_mm, hole_diameter_mm, thickness_mm, nub_position, nub_offset_mm)
+  → reduce_colors(raw, n_colors) with 10 k-means attempts → quantized array + palette
   → generate_shape_preview(quantized_png, palette, raw_bytes=raw, **config)
+      caps silhouette to 512 px
       uses _build_silhouette on raw (alpha-aware)
       palette-snaps every pixel to nearest color (same as 3MF pipeline)
       runs black-priority pass with dilation (same as 3MF pipeline)
       determines base color (largest-area palette color)
-      uses _add_nub with Shapely fillet for smooth nub junction
+      uses _add_nub with Shapely fillet and signed nub_offset_mm for smooth, adjustable nub placement
       nub proportions match user-configured dimensions
       rasterizes Shapely geometry back to pixel mask
       composites: silhouette→palette-snapped colors, nub→base color, background→checker

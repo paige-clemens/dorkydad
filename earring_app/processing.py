@@ -5,6 +5,8 @@ Refactored from png_to_3mf_multicolor.py into reusable functions.
 """
 import io
 import os
+from functools import lru_cache
+from urllib.request import urlretrieve
 import uuid
 import zipfile
 
@@ -104,6 +106,63 @@ def remove_background(image_bytes: bytes, tolerance: int = 20) -> bytes:
     return buf.getvalue()
 
 
+AI_BACKGROUND_MODEL_URL = "https://github.com/danielgatis/rembg/releases/download/v0.0.0/u2netp.onnx"
+AI_BACKGROUND_MODEL_NAME = "u2netp.onnx"
+AI_BACKGROUND_MODEL_SIZE = 320
+
+
+def _ai_background_model_path() -> str:
+    configured_path = os.environ.get("AI_BACKGROUND_MODEL_PATH")
+    if configured_path:
+        if not os.path.isfile(configured_path):
+            raise FileNotFoundError(f"AI background model not found: {configured_path}")
+        return configured_path
+
+    model_dir = os.path.join(os.path.expanduser("~"), ".cache", "earring-maker")
+    model_path = os.path.join(model_dir, AI_BACKGROUND_MODEL_NAME)
+    if not os.path.isfile(model_path):
+        os.makedirs(model_dir, exist_ok=True)
+        urlretrieve(AI_BACKGROUND_MODEL_URL, model_path)
+    return model_path
+
+
+@lru_cache(maxsize=1)
+def _ai_background_session():
+    import onnxruntime
+
+    return onnxruntime.InferenceSession(
+        _ai_background_model_path(),
+        providers=["CPUExecutionProvider"],
+    )
+
+
+def remove_background_ai(image_bytes: bytes) -> bytes:
+    img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
+    rgba = np.array(img)
+    rgb = rgba[:, :, :3].astype(np.float32) / 255.0
+    h, w = rgb.shape[:2]
+
+    model_input = cv2.resize(
+        rgb,
+        (AI_BACKGROUND_MODEL_SIZE, AI_BACKGROUND_MODEL_SIZE),
+        interpolation=cv2.INTER_LINEAR,
+    )
+    mean = np.array([0.485, 0.456, 0.406], dtype=np.float32)
+    std = np.array([0.229, 0.224, 0.225], dtype=np.float32)
+    model_input = ((model_input - mean) / std).transpose(2, 0, 1)[np.newaxis, :]
+    session = _ai_background_session()
+    input_name = session.get_inputs()[0].name
+    prediction = session.run(None, {input_name: model_input.astype(np.float32)})[0][0, 0]
+    prediction -= prediction.min()
+    prediction /= prediction.max() + 1e-8
+    alpha = cv2.resize(prediction, (w, h), interpolation=cv2.INTER_LINEAR)
+    rgba[:, :, 3] = (rgba[:, :, 3].astype(np.float32) * alpha).astype(np.uint8)
+
+    buf = io.BytesIO()
+    Image.fromarray(rgba).save(buf, format="PNG")
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Color reduction / quantization
 # ---------------------------------------------------------------------------
@@ -121,6 +180,9 @@ def reduce_colors(image_bytes: bytes, n_colors: int) -> tuple[np.ndarray, list[t
     arr = np.array(img, dtype=np.float32).reshape(-1, 3)
 
     criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_MAX_ITER, 20, 1.0)
+    # 10 attempts with k-means++ initialization produces the best palette
+    # quality. The 512 px upload cap keeps the pixel count low enough that
+    # this stays responsive.
     _, labels, centers = cv2.kmeans(
         arr, n_colors, None, criteria, 10, cv2.KMEANS_PP_CENTERS
     )
@@ -151,6 +213,7 @@ def generate_shape_preview(
     dark_override_max: int = 70,
     black_dilate_px: int = 1,
     nub_position: str = "center",
+    nub_offset_mm: float = 0.0,
 ) -> bytes:
     """
     Render a top-down preview that matches the 3MF output: each foreground
@@ -173,15 +236,21 @@ def generate_shape_preview(
     dark_override_max : max channel value to treat as "dark" for black override
     black_dilate_px  : dilation radius for black-priority pass
     nub_position     : "left", "center", or "right" horizontal nub placement
+    nub_offset_mm    : signed horizontal offset (mm) from anchor point
     """
     # Load the color image (quantized)
     color_img = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
     W, H = color_img.size
     color_rgba = np.array(color_img)
 
-    # Load the raw image for silhouette (has alpha from bg removal)
+    # Load the raw image for silhouette (has alpha from bg removal).
+    # Cap silhouette resolution so Shapely contour extraction stays fast on
+    # large uploads while the quantized preview image stays crisp.
+    MAX_PREVIEW_DIMENSION = 512
     if raw_bytes is not None:
         sil_img = Image.open(io.BytesIO(raw_bytes)).convert("RGBA")
+        if max(sil_img.width, sil_img.height) > MAX_PREVIEW_DIMENSION:
+            sil_img.thumbnail((MAX_PREVIEW_DIMENSION, MAX_PREVIEW_DIMENSION), Image.LANCZOS)
         if sil_img.size != (W, H):
             sil_img = sil_img.resize((W, H), Image.LANCZOS)
         sil_rgba = np.array(sil_img)
@@ -260,6 +329,7 @@ def generate_shape_preview(
         hole_diameter_mm=hole_diameter_mm,
         fillet_mm=fillet_mm,
         nub_position=nub_position,
+        nub_offset_mm=nub_offset_mm,
     )
     combined_px = shp_scale(combined_mm, xfact=px_per_mm, yfact=px_per_mm, origin=(0, 0))
 
@@ -457,16 +527,19 @@ def _extrude(g, height: float, z0: float = 0.0):
 
 def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
              hole_diameter_mm: float = 1.6, fillet_mm: float = 1.0,
-             nub_position: str = "center"):
+             nub_position: str = "center", nub_offset_mm: float = 0.0):
     """
     Add a nub at the top of the silhouette, smoothly blended into the
     silhouette contour with a fillet so the junction is seamless even on
     irregular shapes. Punch a hole through it for earring attachment.
 
-    nub_position controls horizontal placement:
+    nub_position controls horizontal anchor point:
       "center" – topmost point (default)
       "left"   – leftmost among the topmost points
       "right"  – rightmost among the topmost points
+    nub_offset_mm is a signed horizontal offset (mm) from that anchor point;
+      positive moves the nub to the right, negative to the left.  The final
+      position is clamped so the nub base stays within the silhouette.
 
     Returns (modified_sil_geom, hole_geometry).
     """
@@ -485,8 +558,13 @@ def _add_nub(sil_geom, nub_width_mm: float = 4.0, nub_height_mm: float = 5.0,
     else:  # center
         pick_i = int(np.argmax(top_coords[:, 1]))
 
-    attach_x = float(top_coords[pick_i, 0])
+    attach_x = float(top_coords[pick_i, 0]) + nub_offset_mm
     attach_y = float(top_coords[pick_i, 1])
+
+    # Clamp nub base to silhouette bounding box so it always overlaps
+    minx, _, maxx, _ = sil_geom.bounds
+    hw = nub_width_mm / 2
+    attach_x = max(minx + hw, min(maxx - hw, attach_x))
 
     # Build the nub stem: a rectangle topped with a semicircle
     hw = nub_width_mm / 2
@@ -600,6 +678,7 @@ def generate_3mf(
     black_dilate_px: int = 1,
     object_name: str = "earring",
     nub_position: str = "center",
+    nub_offset_mm: float = 0.0,
 ) -> bytes:
     """
     Full pipeline: image bytes + palette → 3MF file bytes.
@@ -620,6 +699,7 @@ def generate_3mf(
     black_dilate_px   : dilate black outlines by this many px
     object_name   : name embedded in the 3MF
     nub_position  : "left", "center", or "right" horizontal nub placement
+    nub_offset_mm : signed horizontal offset (mm) from anchor point
 
     Returns
     -------
@@ -628,12 +708,26 @@ def generate_3mf(
     n_colors = len(palette)
     pal_arr = np.array(palette, dtype=np.uint8)
 
+    # Cap working resolution to keep Shapely/trimesh operations fast.  The final
+    # print is only ~39 mm across, so anything above ~2048 px is overkill for
+    # 0.4 mm nozzles and causes exponential slowdown in mesh operations.
+    MAX_PROCESSED_DIMENSION = 2048
+
     # Load & upscale
     src_im = Image.open(io.BytesIO(image_bytes))
     has_alpha = src_im.mode in ("RGBA", "LA") or "transparency" in src_im.info
     im = src_im.convert("RGBA")
-    if upscale != 1:
+
+    effective_max = max(im.width, im.height) * upscale
+    if effective_max > MAX_PROCESSED_DIMENSION:
+        # Reduce upscale so the processed image stays within the cap.
+        scale = MAX_PROCESSED_DIMENSION / effective_max
+        new_w = max(1, int(round(im.width * scale)))
+        new_h = max(1, int(round(im.height * scale)))
+        im = im.resize((new_w, new_h), Image.LANCZOS)
+    elif upscale != 1:
         im = im.resize((im.width * upscale, im.height * upscale), Image.LANCZOS)
+
     W, H = im.size
     rgba = np.array(im)
     rgb = rgba[:, :, :3].copy()
@@ -711,6 +805,7 @@ def generate_3mf(
         nub_height_mm=nub_height_mm,
         hole_diameter_mm=hole_diameter_mm,
         nub_position=nub_position,
+        nub_offset_mm=nub_offset_mm,
     )
     color_geoms = {k: g.difference(hole) for k, g in color_geoms.items()}
 

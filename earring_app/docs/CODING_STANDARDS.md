@@ -11,6 +11,7 @@ Rules and conventions for this project. AI assistants and human contributors sho
 - Functions in `processing.py` should be pure where possible: bytes in, bytes out
 - Avoid adding comments that restate what the code does; prefer docstrings on public functions
 - Imports go at the top of the file, grouped: stdlib → third-party → local
+- Model-backed dependencies may be imported inside their processing functions so ordinary non-AI workflows do not initialize model runtimes
 
 ### Naming
 
@@ -24,6 +25,12 @@ Rules and conventions for this project. AI assistants and human contributors sho
 - `processing.py` functions raise exceptions (ValueError, etc.) — they don't catch or log
 - `app.py` catches exceptions at route boundaries, flashes user-friendly messages, and redirects
 - Never silently swallow exceptions
+
+### Earring Configuration
+
+- Persist upload-time geometry settings in the session `config.json` so preview and generation use the same values
+- Parameters expressed in millimeters use a `_mm` suffix and are validated/clamped at route boundaries
+- Thread a new geometry parameter through both `generate_shape_preview` and `generate_3mf` so the preview matches the exported 3MF
 
 ### Type Hints
 

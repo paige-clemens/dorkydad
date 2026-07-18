@@ -78,12 +78,24 @@ This document records architectural and design decisions made during development
 
 ## D12: Configurable background-removal aggressiveness
 
-**Decision:** The upload form exposes a `bg_tolerance` range slider (5–60, default 20) that controls the `tolerance` parameter of `remove_background`.
+**Decision:** The upload form exposes a `bg_tolerance` range slider (1–100, default 25) that controls the `tolerance` parameter of `remove_background`.
 
-**Rationale:** A fixed tolerance works well for clean solid-color backdrops but fails for noisy photos or backgrounds with slight gradients. Letting users increase or decrease aggressiveness avoids both under-removal (bg artifacts remain) and over-removal (foreground eaten away).
+**Rationale:** A fixed tolerance works well for clean solid-color backdrops but fails for noisy photos or backgrounds with slight gradients. The 1–100 range gives fine-grained control: low values only remove colors very close to the corner background color, while high values remove a much wider range of similar colors. This avoids both under-removal (bg artifacts remain) and over-removal (foreground eaten away) on different image types.
 
-## D13: Nub position – left / center / right
+## D13: Local AI background-removal test mode
 
-**Decision:** `_add_nub` accepts a `nub_position` parameter (`"left"`, `"center"`, or `"right"`). The nub attaches at the topmost point (center, default) or at the leftmost/rightmost point among the topmost 2% of the silhouette boundary.
+**Decision:** The upload form offers an optional local AI removal mode backed by direct ONNX Runtime inference with the lightweight U2NetP model. The model session is cached in-process after its first use; color-tolerance removal remains the default.
 
-**Rationale:** Different earring designs hang better from different points. A symmetrical design works best with a centered nub; an asymmetrical one (e.g., a profile silhouette) may look better with a left or right attachment. The 2% vertical tolerance band ensures the algorithm picks from the actual top edge, not from an unrelated part of the outline.
+**Rationale:** U2NetP provides a low-resource way to evaluate semantic background removal on a laptop before introducing a GPU service. Its initial inference downloads the model, while later uploads reuse the cached model session. Direct ONNX Runtime avoids incompatible transitive dependencies while retaining the fast, predictable color-tolerance workflow for solid backdrops.
+
+## D14: Nub position and offset
+
+**Decision:** `_add_nub` accepts both `nub_position` (`"left"`, `"center"`, or `"right"`) and `nub_offset_mm` (a signed horizontal offset in millimeters). The nub first attaches at the topmost point (center, default) or at the leftmost/rightmost point among the topmost 2% of the silhouette boundary, then shifts by `nub_offset_mm` (positive = right, negative = left). The final attachment point is clamped so the nub base always overlaps the silhouette.
+
+**Rationale:** Different earring designs hang better from different points. A symmetrical design works best with a centered nub; an asymmetrical one (e.g., a profile silhouette) may look better with a left or right attachment. The offset parameter lets users fine-tune the exact horizontal placement in millimeters rather than being limited to three preset positions.
+
+## D15: Preview speed and interactivity
+
+**Decision:** The upload route caps uploaded images to 512 px on the longest side and the upload/generate buttons show full-screen loading overlays with rotating stage messages. `generate_3mf` also caps its working resolution to 2048 px on the longest side. `reduce_colors` keeps 10 k-means attempts for the best palette quality.
+
+**Rationale:** The slowness was not just the user's local machine — it was caused by processing multi-megapixel images through k-means and Shapely/trimesh operations. A 39 mm earring printed at 0.4 mm nozzle resolution does not benefit from source images larger than ~512 px, and the on-screen preview is displayed at most ~28 rem tall. The resolution cap keeps the upload→preview path fast, the loading overlay gives clear feedback during the unavoidable 3MF generation step, and k-means quality is preserved by keeping 10 attempts.

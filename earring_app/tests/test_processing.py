@@ -162,6 +162,33 @@ class TestRemoveBackground:
         out = np.array(Image.open(io.BytesIO(result)))
         assert out[0, 0, 3] == 0
 
+    def test_high_tolerance_removes_more(self):
+        # Gradient background: corners are white, edges transition to gray
+        # center is a colored square. Higher tolerance should remove more of
+        # the gray transition before reaching the foreground.
+        img = Image.new("RGB", (100, 100))
+        px = img.load()
+        for x in range(100):
+            for y in range(100):
+                # Distance from nearest edge; 0 at border, 50 in center
+                dist = min(x, y, 99 - x, 99 - y)
+                gray = 255 - dist * 2
+                px[x, y] = (gray, gray, gray)
+        # Colored square in the very center
+        for x in range(40, 60):
+            for y in range(40, 60):
+                px[x, y] = (200, 50, 50)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG")
+
+        low = remove_background(buf.getvalue(), tolerance=1)
+        high = remove_background(buf.getvalue(), tolerance=100)
+        low_arr = np.array(Image.open(io.BytesIO(low)))
+        high_arr = np.array(Image.open(io.BytesIO(high)))
+
+        # High tolerance should remove more background pixels than low tolerance
+        assert np.sum(high_arr[:, :, 3] == 0) > np.sum(low_arr[:, :, 3] == 0)
+
 
 # ── generate_shape_preview ─────────────────────────────────────────────────
 
@@ -424,6 +451,17 @@ class TestAddNub:
         lx = hole_l.centroid.x
         rx = hole_r.centroid.x
         assert lx < rx
+
+    def test_nub_offset_mm_shifts_nub(self):
+        # Wide rectangle: offset from the left anchor moves the nub right;
+        # offset from the right anchor moves it left.
+        poly = Polygon([(0, 0), (20, 0), (20, 10), (0, 10)])
+        _, hole_left = _add_nub(poly, nub_position="left", nub_offset_mm=0)
+        _, hole_left_shifted = _add_nub(poly, nub_position="left", nub_offset_mm=5)
+        _, hole_right = _add_nub(poly, nub_position="right", nub_offset_mm=0)
+        _, hole_right_shifted = _add_nub(poly, nub_position="right", nub_offset_mm=-5)
+        assert hole_left_shifted.centroid.x > hole_left.centroid.x
+        assert hole_right_shifted.centroid.x < hole_right.centroid.x
 
 
 # ── _extrude ───────────────────────────────────────────────────────────────

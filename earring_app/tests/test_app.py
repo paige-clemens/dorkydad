@@ -6,7 +6,7 @@ import os
 import pytest
 from PIL import Image
 
-from app import _allowed
+from app import _allowed, _cap_image_dimension
 
 
 # ── _allowed helper ────────────────────────────────────────────────────────
@@ -41,6 +41,24 @@ class TestAllowed:
 
     def test_empty_string(self):
         assert _allowed("") is False
+
+
+# ── _cap_image_dimension helper ────────────────────────────────────────────
+
+class TestCapImageDimension:
+    def test_small_image_unchanged(self):
+        from tests.conftest import _make_png
+        raw = _make_png(100, 100, 2)
+        out = _cap_image_dimension(raw, 1024)
+        img = Image.open(io.BytesIO(out))
+        assert max(img.size) <= 1024
+
+    def test_large_image_downsized(self):
+        from tests.conftest import _make_png
+        raw = _make_png(200, 200, 2)
+        out = _cap_image_dimension(raw, 80)
+        img = Image.open(io.BytesIO(out))
+        assert max(img.size) <= 80
 
 
 # ── Index page ─────────────────────────────────────────────────────────────
@@ -141,6 +159,24 @@ class TestUpload:
         assert resp.status_code == 302
         assert "/preview" in resp.headers["Location"]
 
+    def test_upload_with_ai_bg_removal(self, client, sample_png, monkeypatch):
+        called_with = []
+
+        def fake_remove_background_ai(raw):
+            called_with.append(raw)
+            return raw
+
+        monkeypatch.setattr("app.remove_background_ai", fake_remove_background_ai)
+        data = {
+            "image": (io.BytesIO(sample_png), "test.png"),
+            "n_colors": "3",
+            "remove_bg": "on",
+            "bg_removal_mode": "ai",
+        }
+        resp = client.post("/upload", data=data, content_type="multipart/form-data")
+        assert resp.status_code == 302
+        assert called_with == [sample_png]
+
     def test_upload_saves_config(self, client, sample_png):
         data = {
             "image": (io.BytesIO(sample_png), "test.png"),
@@ -155,15 +191,16 @@ class TestUpload:
         assert resp.status_code == 302
 
     def test_upload_with_bg_tolerance(self, client, sample_png):
-        data = {
-            "image": (io.BytesIO(sample_png), "test.png"),
-            "n_colors": "3",
-            "remove_bg": "on",
-            "bg_tolerance": "40",
-        }
-        resp = client.post("/upload", data=data, content_type="multipart/form-data")
-        assert resp.status_code == 302
-        assert "/preview" in resp.headers["Location"]
+        for val in ["1", "40", "100"]:
+            data = {
+                "image": (io.BytesIO(sample_png), "test.png"),
+                "n_colors": "3",
+                "remove_bg": "on",
+                "bg_tolerance": val,
+            }
+            resp = client.post("/upload", data=data, content_type="multipart/form-data")
+            assert resp.status_code == 302
+            assert "/preview" in resp.headers["Location"]
 
     def test_upload_saves_nub_position(self, client, sample_png):
         data = {
@@ -225,6 +262,7 @@ class TestPreview:
             "hole_diameter_mm": "2.0",
             "thickness_mm": "1.5",
             "nub_position": "right",
+            "nub_offset_mm": "3.5",
         }
         client.post("/upload", data=data, content_type="multipart/form-data")
         resp = client.get("/preview?n_colors=3")
@@ -235,6 +273,7 @@ class TestPreview:
         assert 'value="7.0"' in html
         assert 'value="2.0"' in html
         assert 'value="1.5"' in html
+        assert 'value="3.5"' in html
         assert 'value="right" selected' in html or \
                "value=\"right\" selected" in html
 

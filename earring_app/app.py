@@ -4,10 +4,12 @@ Flask web application for multicolor earring 3MF generation.
 Upload a PNG/JPEG → reduce colors → preview → approve → download 3MF.
 """
 import base64
+import io
 import json
 import os
 import secrets
 
+from PIL import Image
 from flask import (
     Flask,
     flash,
@@ -27,6 +29,7 @@ from processing import (
     rasterize_svg,
     reduce_colors,
     remove_background,
+    remove_background_ai,
 )
 
 app = Flask(__name__)
@@ -38,9 +41,25 @@ os.makedirs(UPLOAD_DIR, exist_ok=True)
 
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "svg"}
 
+# Resize very large uploads before processing; a 39 mm earring does not need
+# multi-megapixel source images, and capping keeps preview/3MF generation fast.
+# The on-screen preview is at most ~28 rem tall, so 512 px is plenty crisp.
+MAX_UPLOAD_DIMENSION = 512
+
 
 def _allowed(filename: str) -> bool:
     return "." in filename and filename.rsplit(".", 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+def _cap_image_dimension(raw: bytes, max_dim: int = MAX_UPLOAD_DIMENSION) -> bytes:
+    """Resize the image so its longest side is at most *max_dim* pixels."""
+    img = Image.open(io.BytesIO(raw))
+    if max(img.width, img.height) <= max_dim:
+        return raw
+    img.thumbnail((max_dim, max_dim), Image.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 def _session_path(key: str) -> str:
@@ -92,13 +111,21 @@ def upload():
 
     # Optionally remove background
     if request.form.get("remove_bg") == "on":
-        bg_tolerance = request.form.get("bg_tolerance", 20, type=int)
-        bg_tolerance = max(5, min(60, bg_tolerance))
+        bg_removal_mode = request.form.get("bg_removal_mode", "color")
         try:
-            raw = remove_background(raw, tolerance=bg_tolerance)
+            if bg_removal_mode == "ai":
+                raw = remove_background_ai(raw)
+            else:
+                bg_tolerance = request.form.get("bg_tolerance", 25, type=int)
+                bg_tolerance = max(1, min(100, bg_tolerance))
+                raw = remove_background(raw, tolerance=bg_tolerance)
         except Exception as exc:
             flash(f"Background removal failed: {exc}", "error")
             return redirect(url_for("index"))
+
+    # Cap image resolution before saving; large uploads don't improve a 39 mm
+    # print and would make the 3MF pipeline very slow.
+    raw = _cap_image_dimension(raw, MAX_UPLOAD_DIMENSION)
 
     path = _session_path("original")
     with open(path, "wb") as f:
@@ -119,6 +146,12 @@ def upload():
     if nub_position not in ("left", "center", "right"):
         nub_position = "center"
 
+    try:
+        nub_offset_mm = float(request.form.get("nub_offset_mm", "0"))
+    except ValueError:
+        nub_offset_mm = 0.0
+    nub_offset_mm = max(-50, min(50, nub_offset_mm))
+
     config = {
         "target_size_mm": request.form.get("target_size_mm", 39.0, type=float),
         "thickness_mm": request.form.get("thickness_mm", 1.0, type=float),
@@ -126,6 +159,7 @@ def upload():
         "nub_height_mm": request.form.get("nub_height_mm", 5.0, type=float),
         "hole_diameter_mm": request.form.get("hole_diameter_mm", 1.6, type=float),
         "nub_position": nub_position,
+        "nub_offset_mm": nub_offset_mm,
     }
     with open(_session_path("config.json"), "w") as f:
         json.dump(config, f)
@@ -160,6 +194,7 @@ def preview():
     nub_height_mm = config.get("nub_height_mm", 5.0)
     hole_diameter_mm = config.get("hole_diameter_mm", 1.6)
     nub_position = config.get("nub_position", "center")
+    nub_offset_mm = config.get("nub_offset_mm", 0.0)
 
     try:
         quantized, palette = reduce_colors(raw, n_colors)
@@ -184,6 +219,7 @@ def preview():
             nub_height_mm=nub_height_mm,
             hole_diameter_mm=hole_diameter_mm,
             nub_position=nub_position,
+            nub_offset_mm=nub_offset_mm,
         )
         preview_b64 = base64.b64encode(shape_png).decode("ascii")
     except Exception:
@@ -200,6 +236,7 @@ def preview():
         nub_height_mm=nub_height_mm,
         hole_diameter_mm=hole_diameter_mm,
         nub_position=nub_position,
+        nub_offset_mm=nub_offset_mm,
     )
 
 
@@ -228,6 +265,12 @@ def generate():
         nub_position = "center"
 
     try:
+        nub_offset_mm = float(request.form.get("nub_offset_mm", "0"))
+    except ValueError:
+        nub_offset_mm = 0.0
+    nub_offset_mm = max(-50, min(50, nub_offset_mm))
+
+    try:
         data = generate_3mf(
             raw,
             palette,
@@ -237,6 +280,7 @@ def generate():
             nub_height_mm=nub_height_mm,
             hole_diameter_mm=hole_diameter_mm,
             nub_position=nub_position,
+            nub_offset_mm=nub_offset_mm,
         )
     except Exception as exc:
         flash(f"3MF generation failed: {exc}", "error")

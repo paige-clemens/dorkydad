@@ -586,3 +586,58 @@ footer {
 [data-theme="high-contrast"] .theme-btn[aria-pressed="true"] {
   color: #000000;
 }
+
+/* --- Loading overlay ------------------------------------------------------ */
+.loading-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  background: rgba(0, 0, 0, 0.6);
+  color: #fff;
+  z-index: 1000;
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.2s ease, visibility 0.2s ease;
+}
+
+.loading-overlay.is-active {
+  opacity: 1;
+  visibility: visible;
+}
+
+.loading-spinner {
+  width: 48px;
+  height: 48px;
+  border: 5px solid rgba(255, 255, 255, 0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+.loading-message {
+  font-size: 1.125rem;
+  font-weight: 600;
+  text-align: center;
+  max-width: 80%;
+}
+
+.loading-stage {
+  font-size: 0.875rem;
+  opacity: 0.9;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .loading-spinner {
+    animation: none;
+    border: 5px solid #fff;
+  }
+}
